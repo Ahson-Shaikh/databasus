@@ -41,10 +41,6 @@ func (m *mockStorageReferenceReporter) GetStorageAttachedDatabasesIDs(
 	return []uuid.UUID{}, nil
 }
 
-func (m *mockStorageReferenceReporter) GetStorageBackupReferences(uuid.UUID) (int64, error) {
-	return 0, nil
-}
-
 func Test_SaveNewStorage_StorageReturnedViaGet(t *testing.T) {
 	owner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 	router := createRouter()
@@ -424,7 +420,7 @@ func Test_WorkspaceRolePermissions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			router := createRouter()
-			SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+			SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
 
 			owner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 			workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Test Workspace", owner, router)
@@ -1140,7 +1136,7 @@ func Test_TransferStorage_PermissionsEnforced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			router := createRouter()
-			SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+			SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
 
 			sourceOwner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 			targetOwner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
@@ -1232,7 +1228,7 @@ func Test_TransferStorage_PermissionsEnforced(t *testing.T) {
 
 func Test_TransferStorageNotManagableWorkspace_TransferFailed(t *testing.T) {
 	router := createRouter()
-	SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
 
 	userA := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 	userB := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
@@ -1291,7 +1287,7 @@ func createRouter() *gin.Engine {
 
 	audit_logs.SetupDependencies()
 	SetupDependencies()
-	SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
 
 	return router
 }
@@ -1343,10 +1339,10 @@ func Test_DeleteStorage_WhenBackupsStillReferenceIt_IsRefused(t *testing.T) {
 	workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Referenced Storage Workspace", owner, router)
 	storage := CreateTestStorage(workspace.ID)
 
-	SetStorageReferenceReportersForTest(&countingReferenceReporter{backupReferences: 3})
+	SetStorageBackupCountersForTest(&countingBackupCounter{backupReferences: 3})
 
 	t.Cleanup(func() {
-		SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+		SetStorageBackupCountersForTest()
 		RemoveTestStorage(t.Context(), storage.ID)
 		workspaces_testing.RemoveTestWorkspace(t.Context(), workspace, router)
 	})
@@ -1363,7 +1359,7 @@ func Test_DeleteStorage_WhenCleanupIsPending_DrainsItBeforeTheCredentialsGo(t *t
 	workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Draining Storage Workspace", owner, router)
 	storage := CreateTestStorage(workspace.ID)
 
-	SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
 
 	fileName := "drained-" + storage.ID.String()
 
@@ -1378,8 +1374,6 @@ func Test_DeleteStorage_WhenCleanupIsPending_DrainsItBeforeTheCredentialsGo(t *t
 
 	_, err = storage.GetFile(t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), fileName)
 	assert.Error(t, err, "the drain runs while the credentials still exist, so the file goes with the storage")
-
-	workspaces_testing.RemoveTestWorkspace(t.Context(), workspace, router)
 }
 
 func testUserModel(t *testing.T, signIn *users_dto.SignInResponseDTO) *users_models.User {
@@ -1391,14 +1385,10 @@ func testUserModel(t *testing.T, signIn *users_dto.SignInResponseDTO) *users_mod
 	return user
 }
 
-type countingReferenceReporter struct {
+type countingBackupCounter struct {
 	backupReferences int64
 }
 
-func (r *countingReferenceReporter) GetStorageAttachedDatabasesIDs(uuid.UUID) ([]uuid.UUID, error) {
-	return nil, nil
-}
-
-func (r *countingReferenceReporter) GetStorageBackupReferences(uuid.UUID) (int64, error) {
-	return r.backupReferences, nil
+func (c *countingBackupCounter) GetStorageBackupReferences(uuid.UUID) (int64, error) {
+	return c.backupReferences, nil
 }

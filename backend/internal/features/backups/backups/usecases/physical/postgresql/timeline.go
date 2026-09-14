@@ -186,14 +186,6 @@ func ValidateStartLsnAgainstHistory(
 	return chain_view.ValidationResult{Status: chain_view.ValidationStatusOK}, nil
 }
 
-// UploadHistoryFile reads the .history file for timelineID from the source
-// cluster's pg_wal/, compresses with zstd, optionally encrypts, uploads
-// artifact + sidecar to storage, and inserts the physical_wal_history_files
-// row. Idempotent on (database_id, timeline_id) via the UNIQUE constraint:
-// a duplicate insert returns nil after observing the existing row.
-//
-// Shared by full.go (post-stream, when the FULL ran on a TL > 1) and
-// PR 4's wal_stream.go (which also observes .history arrivals).
 type HistoryUploadSpec struct {
 	Conn           *pgx.Conn
 	TimelineID     int
@@ -207,6 +199,8 @@ type HistoryUploadSpec struct {
 	Logger         *slog.Logger
 }
 
+// Idempotent on (database_id, timeline_id) through the UNIQUE constraint: a
+// duplicate insert returns the existing row instead of an error.
 func UploadHistoryFile(
 	ctx context.Context,
 	spec HistoryUploadSpec,

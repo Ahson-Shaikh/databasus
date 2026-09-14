@@ -414,6 +414,8 @@ func Test_MakeBackup_WhenPublicationFails_EveryFileOfTheAttemptIsRemoved(t *test
 	assert.Equal(t, backups_core_logical.BackupStatusFailed, persistedBackup.Status,
 		"a backup whose files cannot be claimed must not be published")
 
+	// The caller names the files its scenario actually produced: asserting the
+	// absence of a file nothing ever wrote would pass with no cleanup at all.
 	assertBackupFilesRemoved(t, fixture, backup.FileName, backup.FileName+metadataSuffix)
 }
 

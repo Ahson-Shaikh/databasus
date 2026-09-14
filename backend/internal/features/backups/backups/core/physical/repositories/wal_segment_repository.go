@@ -119,9 +119,9 @@ func (r *PhysicalWalSegmentRepository) DeleteByID(id uuid.UUID) error {
 	return storage.GetDb().Delete(&physical_models.PhysicalWalSegment{}, "id = ?", id).Error
 }
 
-// A NULL file_name no longer proves the upload wrote nothing: the object is
-// written before the row names it. The bytes such a claim may have left are owned
-// by their own pending deletion, so this only removes the aged-out claim row.
+// A NULL file_name does not prove the upload wrote nothing: the object is written
+// before the row names it. The bytes such a claim may have left are owned by their
+// own pending deletion, so this only removes the aged-out claim row.
 func (r *PhysicalWalSegmentRepository) DeleteAbandonedClaims(
 	databaseID uuid.UUID,
 	olderThan time.Time,
@@ -204,30 +204,30 @@ func (r *PhysicalWalSegmentRepository) FindByChainKey(
 // makes this a no-op. updated=true means the upload is durably committed;
 // updated=false means the NULL claim no longer exists (cascade caught it) and the
 // caller must DeleteFile the now-orphaned storage object.
-func (r *PhysicalWalSegmentRepository) MarkUploaded(
-	id uuid.UUID,
-	fileName string,
-	compressedSizeMb float64,
-	encryptionSalt, encryptionIV *string,
-) (updated bool, err error) {
-	return r.MarkUploadedInTransaction(storage.GetDb(), id, fileName, compressedSizeMb, encryptionSalt, encryptionIV)
+type WalSegmentUpload struct {
+	SegmentID        uuid.UUID
+	FileName         string
+	CompressedSizeMb float64
+	EncryptionSalt   *string
+	EncryptionIV     *string
+}
+
+func (r *PhysicalWalSegmentRepository) MarkUploaded(upload WalSegmentUpload) (updated bool, err error) {
+	return r.MarkUploadedInTransaction(storage.GetDb(), upload)
 }
 
 func (r *PhysicalWalSegmentRepository) MarkUploadedInTransaction(
 	tx *gorm.DB,
-	id uuid.UUID,
-	fileName string,
-	compressedSizeMb float64,
-	encryptionSalt, encryptionIV *string,
+	upload WalSegmentUpload,
 ) (updated bool, err error) {
 	result := tx.
 		Model(&physical_models.PhysicalWalSegment{}).
-		Where("id = ? AND file_name IS NULL", id).
+		Where("id = ? AND file_name IS NULL", upload.SegmentID).
 		Updates(map[string]any{
-			"file_name":          fileName,
-			"compressed_size_mb": compressedSizeMb,
-			"encryption_salt":    encryptionSalt,
-			"encryption_iv":      encryptionIV,
+			"file_name":          upload.FileName,
+			"compressed_size_mb": upload.CompressedSizeMb,
+			"encryption_salt":    upload.EncryptionSalt,
+			"encryption_iv":      upload.EncryptionIV,
 		})
 	if result.Error != nil {
 		return false, result.Error

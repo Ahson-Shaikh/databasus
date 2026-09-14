@@ -15,7 +15,6 @@ import (
 	backups_core_enums "databasus-backend/internal/features/backups/backups/core/enums"
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
-	"databasus-backend/internal/features/storages"
 	storage_files "databasus-backend/internal/features/storages/files"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/tools"
@@ -137,7 +136,6 @@ type WalStreamSpec struct {
 	DatabaseID     uuid.UUID
 	SourceDB       *postgresql_physical.PostgresqlPhysicalDatabase
 	StorageID      uuid.UUID
-	Storage        storages.StorageFileSaver
 	FileStore      *storage_files.Store
 	Encryption     backups_core_enums.BackupEncryption
 	MasterKey      string

@@ -653,12 +653,12 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 			"backup_id", full.ID, "database_id", full.DatabaseID)
 
 		s.failOrphanedBackup(ctx, logger, orphanedBackupSpec{
-			Kind:       physical_enums.PhysicalBackupTypeFull,
-			BackupID:   full.ID,
-			DatabaseID: full.DatabaseID,
-			StorageID:  full.StorageID,
-			FileName:   valueOrEmpty(full.FileName),
-			Manifest:   valueOrEmpty(full.ManifestFileName),
+			Kind:             physical_enums.PhysicalBackupTypeFull,
+			BackupID:         full.ID,
+			DatabaseID:       full.DatabaseID,
+			StorageID:        full.StorageID,
+			FileName:         valueOrEmpty(full.FileName),
+			ManifestFileName: valueOrEmpty(full.ManifestFileName),
 		})
 	}
 
@@ -676,20 +676,20 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 			"backup_id", incremental.ID, "database_id", incremental.DatabaseID)
 
 		s.failOrphanedBackup(ctx, logger, orphanedBackupSpec{
-			Kind:       physical_enums.PhysicalBackupTypeIncremental,
-			BackupID:   incremental.ID,
-			DatabaseID: incremental.DatabaseID,
-			StorageID:  incremental.StorageID,
-			FileName:   valueOrEmpty(incremental.FileName),
-			Manifest:   valueOrEmpty(incremental.ManifestFileName),
+			Kind:             physical_enums.PhysicalBackupTypeIncremental,
+			BackupID:         incremental.ID,
+			DatabaseID:       incremental.DatabaseID,
+			StorageID:        incremental.StorageID,
+			FileName:         valueOrEmpty(incremental.FileName),
+			ManifestFileName: valueOrEmpty(incremental.ManifestFileName),
 		})
 	}
 
 	return nil
 }
 
-// describeOrphan reads the file the claimed row already names. A claim carries no
-// file name of its own, and the sweep cannot hand back what it cannot name.
+// A claim carries no file name of its own, and the sweep cannot hand back what it
+// cannot name.
 func (s *PhysicalBackupsScheduler) describeOrphan(
 	logger *slog.Logger,
 	claim *physical_models.PhysicalInFlightBackup,
@@ -710,7 +710,7 @@ func (s *PhysicalBackupsScheduler) describeOrphan(
 
 		spec.StorageID = row.StorageID
 		spec.FileName = valueOrEmpty(row.FileName)
-		spec.Manifest = valueOrEmpty(row.ManifestFileName)
+		spec.ManifestFileName = valueOrEmpty(row.ManifestFileName)
 
 		return spec
 	}
@@ -724,21 +724,20 @@ func (s *PhysicalBackupsScheduler) describeOrphan(
 
 	spec.StorageID = row.StorageID
 	spec.FileName = valueOrEmpty(row.FileName)
-	spec.Manifest = valueOrEmpty(row.ManifestFileName)
+	spec.ManifestFileName = valueOrEmpty(row.ManifestFileName)
 
 	return spec
 }
 
-// orphanedBackupSpec is one IN_PROGRESS row the previous run left behind. It
-// carries the file name because the row now holds one from upload start, so the
-// sweep can hand that file back instead of assuming none exists.
+// orphanedBackupSpec is one IN_PROGRESS row the previous run left behind, with
+// the names its files carry so the sweep can hand them back.
 type orphanedBackupSpec struct {
-	Kind       physical_enums.PhysicalBackupType
-	BackupID   uuid.UUID
-	DatabaseID uuid.UUID
-	StorageID  uuid.UUID
-	FileName   string
-	Manifest   string
+	Kind             physical_enums.PhysicalBackupType
+	BackupID         uuid.UUID
+	DatabaseID       uuid.UUID
+	StorageID        uuid.UUID
+	FileName         string
+	ManifestFileName string
 }
 
 func (s *PhysicalBackupsScheduler) failOrphanedBackup(
@@ -772,8 +771,8 @@ func (s *PhysicalBackupsScheduler) failOrphanedBackup(
 // essential: an orphan claim left behind would block every future tick from
 // acquiring the cross-table single-in-flight slot for that DB, freezing it.
 //
-// The row carries a file name from upload start, so the sweep hands that file
-// back to cleanup in the same transaction, gated on the status flip taking effect.
+// The sweep hands the row's files back to cleanup in the same transaction, gated
+// on the status flip taking effect.
 func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
 	ctx context.Context,
 	spec orphanedBackupSpec,
@@ -808,9 +807,9 @@ func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
 				{StorageID: spec.StorageID, FileName: spec.FileName + metadataSuffix},
 			}
 
-			if spec.Manifest != "" {
+			if spec.ManifestFileName != "" {
 				references = append(references,
-					storage_files.StoredFileReference{StorageID: spec.StorageID, FileName: spec.Manifest})
+					storage_files.StoredFileReference{StorageID: spec.StorageID, FileName: spec.ManifestFileName})
 			}
 
 			if err := s.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {

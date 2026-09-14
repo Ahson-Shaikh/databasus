@@ -15,7 +15,6 @@ import (
 	"databasus-backend/internal/features/storages"
 	users_models "databasus-backend/internal/features/users/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
-	"databasus-backend/internal/storage"
 )
 
 type BackupConfigService struct {
@@ -51,32 +50,6 @@ func (s *BackupConfigService) GetStorageAttachedDatabasesIDs(
 	}
 
 	return databasesIDs, nil
-}
-
-// The tables are named rather than the models imported, because the backups
-// feature imports this package.
-func (s *BackupConfigService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
-	var total int64
-
-	for _, table := range []string{
-		"physical_full_backups",
-		"physical_incremental_backups",
-		"physical_wal_segments",
-		"physical_wal_history_files",
-	} {
-		var count int64
-
-		if err := storage.GetDb().
-			Table(table).
-			Where("storage_id = ?", storageID).
-			Count(&count).Error; err != nil {
-			return 0, fmt.Errorf("count %s of a storage: %w", table, err)
-		}
-
-		total += count
-	}
-
-	return total, nil
 }
 
 func (s *BackupConfigService) SaveBackupConfigWithAuth(

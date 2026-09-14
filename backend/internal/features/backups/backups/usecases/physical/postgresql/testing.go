@@ -843,7 +843,6 @@ func StartWalStreamerForTest(t *testing.T, spec WalStreamerTestSpec) *WalStreame
 		DatabaseID:                fixture.DB.ID,
 		SourceDB:                  fixture.DB.PostgresqlPhysical,
 		StorageID:                 fixture.Storage.ID,
-		Storage:                   spec.Storage,
 		FileStore:                 spec.FileStore,
 		Encryption:                backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor:            encryption.GetFieldEncryptor(),

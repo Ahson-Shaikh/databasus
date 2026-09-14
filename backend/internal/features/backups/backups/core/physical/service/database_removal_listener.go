@@ -26,6 +26,29 @@ func (s *PhysicalBackupService) OnBeforeDatabaseRemove(ctx context.Context, data
 	})
 }
 
+// The physical rows are the only record of the file names in a storage, so the
+// storage cannot go while they exist.
+func (s *PhysicalBackupService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
+	var total int64
+
+	for _, model := range []any{
+		&physical_models.PhysicalFullBackup{},
+		&physical_models.PhysicalIncrementalBackup{},
+		&physical_models.PhysicalWalSegment{},
+		&physical_models.PhysicalWalHistoryFile{},
+	} {
+		var count int64
+
+		if err := db.GetDb().Model(model).Where("storage_id = ?", storageID).Count(&count).Error; err != nil {
+			return 0, fmt.Errorf("count physical rows of a storage: %w", err)
+		}
+
+		total += count
+	}
+
+	return total, nil
+}
+
 func (s *PhysicalBackupService) collectDatabaseFileReferences(
 	tx *gorm.DB,
 	databaseID uuid.UUID,
@@ -82,18 +105,15 @@ func artifactReferences(
 	storageID uuid.UUID,
 	fileName, manifestFileName string,
 ) []storage_files.StoredFileReference {
-	if fileName == "" {
-		return nil
-	}
+	references := make([]storage_files.StoredFileReference, 0, 3)
 
-	references := []storage_files.StoredFileReference{
-		{StorageID: storageID, FileName: fileName},
-		{StorageID: storageID, FileName: fileName + metadataSuffix},
-	}
+	for _, name := range []string{fileName, fileName + metadataSuffix, manifestFileName} {
+		if name == "" || name == metadataSuffix {
+			continue
+		}
 
-	if manifestFileName != "" {
 		references = append(references,
-			storage_files.StoredFileReference{StorageID: storageID, FileName: manifestFileName})
+			storage_files.StoredFileReference{StorageID: storageID, FileName: name})
 	}
 
 	return references

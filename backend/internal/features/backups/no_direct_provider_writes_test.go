@@ -14,8 +14,8 @@ import (
 )
 
 // Backup code writes and removes stored files through the file store, which is what
-// keeps a failed backup from leaving one behind. The old call shape still compiles
-// everywhere, so a guard keeps it from coming back.
+// keeps a failed backup from leaving one behind. A provider's own methods stay
+// reachable from here, so a guard keeps them out.
 func Test_BackupCode_DoesNotCallProviderSaveOrDeleteDirectly(t *testing.T) {
 	var offenders []string
 

@@ -1054,8 +1054,8 @@ func (s *PhysicalBackupService) deleteFullArtifactAndRow(
 
 // requestFileDeletions records the obligation to remove these files in the same
 // transaction that removes the rows naming them. Nothing reaches the provider
-// here: a rolled back cascade leaves every object intact, and a storage outage
-// no longer decides whether a catalog row may go.
+// here, so a rolled back cascade leaves every object intact and a storage outage
+// does not decide whether a catalog row may go.
 func (s *PhysicalBackupService) requestFileDeletions(
 	ctx context.Context,
 	tx *gorm.DB,

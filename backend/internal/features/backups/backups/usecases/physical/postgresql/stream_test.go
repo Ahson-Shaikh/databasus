@@ -116,8 +116,8 @@ func (f *fakeStorageFileSaver) DeleteFile(context.Context, encryption.FieldEncry
 func (f *fakeStorageFileSaver) Validate(encryption.FieldEncryptor) error       { return nil }
 func (f *fakeStorageFileSaver) TestConnection(encryption.FieldEncryptor) error { return nil }
 
-// The physical stream writes through the file store now, and the fake keeps its
-// own recording so the deadline and payload assertions stay where they were.
+// The physical stream writes through the file store, and the fake records what it
+// receives so the deadline and payload assertions have something to read.
 func (f *fakeStorageFileSaver) WriteFile(
 	ctx context.Context,
 	reference storage_files.StoredFileReference,

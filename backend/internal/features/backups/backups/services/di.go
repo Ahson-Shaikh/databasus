@@ -78,5 +78,6 @@ var SetupDependencies = sync.OnceFunc(func() {
 		SetDatabaseStorageChangeListener(backupService)
 
 	databases.GetDatabaseService().AddDbRemoveListener(backupService)
+	storages.GetStorageService().AddStorageBackupCounter(backupService)
 	databases.GetDatabaseService().AddDbCopyListener(backups_config_logical.GetBackupConfigService())
 })

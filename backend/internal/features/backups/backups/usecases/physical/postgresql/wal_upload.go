@@ -403,8 +403,8 @@ func (u *WalUploader) reference(objectName string) storage_files.StoredFileRefer
 	return storage_files.StoredFileReference{StorageID: u.deps.StorageID, FileName: objectName}
 }
 
-// discardAttempt hands the attempt's artifact and sidecar back to cleanup. No
-// catalog row survives to carry them, so the request gets a transaction of its own.
+// No catalog row survives to carry these files, so the request gets a transaction
+// of its own.
 func (u *WalUploader) discardAttempt(ctx context.Context, objectName string) {
 	references := []storage_files.StoredFileReference{
 		u.reference(objectName),
@@ -435,9 +435,13 @@ func (u *WalUploader) commitSegment(ctx context.Context, spec commitSegmentSpec)
 	committed := false
 
 	err := db.GetDb().Transaction(func(tx *gorm.DB) error {
-		updated, err := u.deps.WalSegmentRepo.MarkUploadedInTransaction(
-			tx, spec.Claim.ID, spec.ObjectName, spec.CompressedSizeMb, nilIfEmpty(spec.Salt), nilIfEmpty(spec.IV),
-		)
+		updated, err := u.deps.WalSegmentRepo.MarkUploadedInTransaction(tx, physical_repositories.WalSegmentUpload{
+			SegmentID:        spec.Claim.ID,
+			FileName:         spec.ObjectName,
+			CompressedSizeMb: spec.CompressedSizeMb,
+			EncryptionSalt:   nilIfEmpty(spec.Salt),
+			EncryptionIV:     nilIfEmpty(spec.IV),
+		})
 		if err != nil {
 			return err
 		}

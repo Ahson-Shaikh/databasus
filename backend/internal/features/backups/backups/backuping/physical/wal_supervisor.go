@@ -276,7 +276,6 @@ func (s *PhysicalWalStreamSupervisor) startStreamer(
 		SourceDB:                  tunneledDatabase.GetDatabaseThroughTunnel(),
 		IsBastionReachable:        tunneledDatabase.IsBastionReachable,
 		StorageID:                 storage.ID,
-		Storage:                   storage,
 		FileStore:                 s.fileStore,
 		Encryption:                backupConfig.Encryption,
 		MasterKey:                 masterKey,

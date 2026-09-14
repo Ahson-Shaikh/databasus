@@ -41,21 +41,14 @@ func (s CommonBackupSpec) runStreamParams(
 	}
 }
 
-// The ZSTD -> GZIP -> NONE fallback runs INSIDE the per-backup replication slot,
-// so the slot is held across every attempt; only the --compress flag, the recorded
-// codec and the object key differ between them. A rejected attempt leaves an object
-// of its own for cleanup rather than being overwritten.
-//
-// IncrementalManifestPath is "" for a FULL; a non-empty path is the downloaded
-// parent-manifest temp file that makes this an INCR (--incremental=<path>).
-// streamAttemptSpec carries what one backup needs to stream, so the codec loop
-// does not grow a positional list every time the caller learns something new.
 type streamAttemptSpec struct {
-	Common                  CommonBackupSpec
-	BackupID                uuid.UUID
-	Creds                   *postgresql_shared.CredentialTempFiles
-	Label                   string
-	SystemID                uint64
+	Common   CommonBackupSpec
+	BackupID uuid.UUID
+	Creds    *postgresql_shared.CredentialTempFiles
+	Label    string
+	SystemID uint64
+	// "" for a FULL; a non-empty path is the downloaded parent-manifest temp file
+	// that makes this an INCR (--incremental=<path>).
 	IncrementalManifestPath string
 	Classify                streamErrorClassifier
 
@@ -66,6 +59,10 @@ type streamAttemptSpec struct {
 	MintAndSaveAttemptName func() (string, error)
 }
 
+// The ZSTD -> GZIP -> NONE fallback runs INSIDE the per-backup replication slot,
+// so the slot is held across every attempt; only the --compress flag, the recorded
+// codec and the object key differ between them. A rejected attempt leaves an object
+// of its own for cleanup rather than being overwritten.
 func streamWithCodecFallback(
 	ctx context.Context,
 	spec streamAttemptSpec,

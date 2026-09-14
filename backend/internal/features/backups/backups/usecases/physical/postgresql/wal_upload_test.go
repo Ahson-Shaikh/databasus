@@ -81,8 +81,8 @@ func Test_WalUpload_ClaimSucceeds_SaveFileLands_FileNameUpdatedFromNullToNonNull
 	require.NotNil(t, row)
 	require.NotNil(t, row.FileName, "file_name must be flipped from NULL to the object key")
 
-	// The name carries a per-attempt UUID now, so the row is the only place that
-	// knows it, which is where restore reads it from too.
+	// The name carries a per-attempt UUID, so the row is the only place that knows
+	// it, which is where restore reads it from too.
 	objectName := *row.FileName
 	require.True(t, store.hasObject(objectName), "artifact must be in storage under the name the row carries")
 	require.True(t, store.hasObject(objectName+metadataSuffix), "sidecar must be uploaded")

@@ -15,24 +15,27 @@ import (
 )
 
 type StorageService struct {
-	storageRepository         *StorageRepository
-	workspaceService          *workspaces_services.WorkspaceService
-	auditLogService           *audit_logs.AuditLogService
-	fieldEncryptor            encryption.FieldEncryptor
-	storageReferenceReporters []StorageReferenceReporter
+	storageRepository       *StorageRepository
+	workspaceService        *workspaces_services.WorkspaceService
+	auditLogService         *audit_logs.AuditLogService
+	fieldEncryptor          encryption.FieldEncryptor
+	storageDatabaseCounters []StorageDatabaseCounter
+	storageBackupCounters   []StorageBackupCounter
 }
 
-func (s *StorageService) AddStorageReferenceReporter(
-	reporter StorageReferenceReporter,
-) {
-	s.storageReferenceReporters = append(s.storageReferenceReporters, reporter)
+func (s *StorageService) AddStorageDatabaseCounter(counter StorageDatabaseCounter) {
+	s.storageDatabaseCounters = append(s.storageDatabaseCounters, counter)
+}
+
+func (s *StorageService) AddStorageBackupCounter(counter StorageBackupCounter) {
+	s.storageBackupCounters = append(s.storageBackupCounters, counter)
 }
 
 func (s *StorageService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
 	var total int64
 
-	for _, reporter := range s.storageReferenceReporters {
-		count, err := reporter.GetStorageBackupReferences(storageID)
+	for _, counter := range s.storageBackupCounters {
+		count, err := counter.GetStorageBackupReferences(storageID)
 		if err != nil {
 			return 0, err
 		}
@@ -49,7 +52,7 @@ func (s *StorageService) GetStorageAttachedDatabasesIDs(
 	seen := make(map[uuid.UUID]struct{})
 	merged := make([]uuid.UUID, 0)
 
-	for _, counter := range s.storageReferenceReporters {
+	for _, counter := range s.storageDatabaseCounters {
 		ids, err := counter.GetStorageAttachedDatabasesIDs(storageID)
 		if err != nil {
 			return nil, err

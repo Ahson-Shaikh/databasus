@@ -612,8 +612,8 @@ func createTestInterval() intervals.Interval {
 	}
 }
 
-// The point of the whole change: the catalog row goes even when the provider is
-// refusing, and the file still disappears once it stops refusing.
+// The catalog row goes while the provider is refusing, and the file follows once
+// it stops.
 func Test_DeleteBackup_WhenProviderRefusesThenRecovers_RowGoesFirstAndFileFollows(t *testing.T) {
 	fixture := CreateBackupTestFixture(t, "Flaky Cleanup Workspace")
 	backup := SeedInProgressTestBackup(t, fixture.Database.ID, fixture.Storage.ID)

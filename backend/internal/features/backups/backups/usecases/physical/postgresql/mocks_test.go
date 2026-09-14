@@ -47,8 +47,8 @@ type mockWalStorage struct {
 }
 
 // hasObjectFor reports whether any stored object belongs to the given segment.
-// Per-attempt names mean a test can no longer rebuild the exact key, so it matches
-// on the segment identity the key is derived from.
+// A test cannot rebuild the exact key, which carries a per-attempt UUID, so it
+// matches on the segment identity the key derives from.
 func (m *mockWalStorage) hasObjectFor(databaseID uuid.UUID, timelineID int, walFilename string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -18,6 +18,7 @@ var (
 		audit_logs.GetAuditLogService(),
 		encryption.GetFieldEncryptor(),
 		nil,
+		nil,
 	}
 )
 
