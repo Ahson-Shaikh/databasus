@@ -952,6 +952,47 @@ func Test_PersistFullResult_WhenCompleted_KeepsTheFilesTheAttemptWrote(t *testin
 	require.NoError(t, reader.Close())
 }
 
+func Test_PersistFullResult_WhenCancelled_HandsTheFilesBackToCleanup(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	backuper := CreateTestPhysicalBackuper(nil)
+
+	fullBackup := seedInProgressFull(t, prereqs)
+	claimInFlight(t, prereqs.DB.ID, physical_enums.PhysicalBackupTypeFull, fullBackup.ID)
+
+	fileName := "physical-cancelled-" + fullBackup.ID.String()
+	manifestName := fileName + ".manifest"
+
+	for _, name := range []string{fileName, manifestName} {
+		_, err := storages.GetStorageFileStore().WriteFile(
+			t.Context(),
+			storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: name},
+			strings.NewReader("partial physical artifact"),
+		)
+		require.NoError(t, err)
+	}
+
+	result := postgresql_executor.PhysicalBackupResult{
+		Status:           physical_enums.PhysicalBackupStatusCanceled,
+		FileName:         fileName,
+		ManifestFileName: manifestName,
+		CompletedAt:      time.Now().UTC(),
+	}
+
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: manifestName},
+	))
+
+	for _, name := range []string{fileName, manifestName} {
+		_, err := prereqs.Storage.GetFile(
+			t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), name,
+		)
+		assert.Error(t, err, "%s must not survive a cancelled backup", name)
+	}
+}
+
 func Test_PersistFullResult_WhenFailed_HandsTheFilesBackToCleanup(t *testing.T) {
 	prereqs := seedBackupPrereqs(t)
 	backuper := CreateTestPhysicalBackuper(nil)

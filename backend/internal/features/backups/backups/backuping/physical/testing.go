@@ -64,6 +64,7 @@ func CreateTestPhysicalScheduler() *PhysicalBackupsScheduler {
 		backups_config_physical.GetBackupConfigService(),
 		chain_view.GetChainViewService(),
 		tasks_cancellation.GetRequester(),
+		storages.GetStorageFileStore(),
 		CreateTestPhysicalBackuper(nil),
 		atomicTime{},
 		logger.GetLogger(),
