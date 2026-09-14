@@ -211,8 +211,19 @@ func (r *PhysicalWalSegmentRepository) MarkUploaded(
 	compressedSizeMb float64,
 	encryptionSalt, encryptionIV *string,
 ) (updated bool, err error) {
-	result := storage.
-		GetDb().
+	return r.MarkUploadedInTransaction(storage.GetDb(), id, fileName, compressedSizeMb, encryptionSalt, encryptionIV)
+}
+
+// MarkUploadedInTransaction lets the caller publish the segment and spend the write
+// receipts for its files in one transaction.
+func (r *PhysicalWalSegmentRepository) MarkUploadedInTransaction(
+	tx *gorm.DB,
+	id uuid.UUID,
+	fileName string,
+	compressedSizeMb float64,
+	encryptionSalt, encryptionIV *string,
+) (updated bool, err error) {
+	result := tx.
 		Model(&physical_models.PhysicalWalSegment{}).
 		Where("id = ? AND file_name IS NULL", id).
 		Updates(map[string]any{

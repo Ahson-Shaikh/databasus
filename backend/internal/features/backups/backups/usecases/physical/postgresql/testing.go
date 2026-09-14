@@ -27,6 +27,7 @@ import (
 	"databasus-backend/internal/features/intervals"
 	"databasus-backend/internal/features/notifiers"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	users_dto "databasus-backend/internal/features/users/dto"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
@@ -779,9 +780,38 @@ type WalStreamerForTest struct {
 	Stop       func()
 }
 
+// fixedStorageLocator resolves every storage ID to the one saver a test handed in,
+// so the store writes and deletes exactly where the test can observe it.
+type fixedStorageLocator struct {
+	storage storages.StorageFileSaver
+}
+
+func (l fixedStorageLocator) GetFileWriter(
+	context.Context, uuid.UUID,
+) (storage_files.FileWriter, error) {
+	return l.storage, nil
+}
+
+func (l fixedStorageLocator) GetFileRemover(
+	context.Context, uuid.UUID,
+) (storage_files.FileRemover, error) {
+	return l.storage, nil
+}
+
+func NewTestFileStore(saver storages.StorageFileSaver) *storage_files.Store {
+	return storage_files.NewStore(storage_files.Dependencies{
+		Repository:     &storage_files.PendingDeletionRepository{},
+		Locator:        fixedStorageLocator{storage: saver},
+		FieldEncryptor: encryption.GetFieldEncryptor(),
+		Logger:         logger.GetLogger(),
+		Timings:        storage_files.TimingsForTest(),
+	})
+}
+
 type WalStreamerTestSpec struct {
 	Fixture                   *PhysicalDBFixture
 	Storage                   storages.StorageFileSaver
+	FileStore                 *storage_files.Store
 	WatchDirRoot              string
 	WalLagThresholdBytes      int64
 	ForcedRotationInterval    time.Duration
@@ -805,11 +835,16 @@ func StartWalStreamerForTest(t *testing.T, spec WalStreamerTestSpec) *WalStreame
 		DropReplicationSlotExternally(t, adminConn, fixture.DB.PostgresqlPhysical.ReplicationSlotName)
 	})
 
+	if spec.FileStore == nil {
+		spec.FileStore = NewTestFileStore(spec.Storage)
+	}
+
 	supervisor := NewWalStreamSupervisor(WalStreamSpec{
 		DatabaseID:                fixture.DB.ID,
 		SourceDB:                  fixture.DB.PostgresqlPhysical,
 		StorageID:                 fixture.Storage.ID,
 		Storage:                   spec.Storage,
+		FileStore:                 spec.FileStore,
 		Encryption:                backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor:            encryption.GetFieldEncryptor(),
 		WalSegmentRepo:            physical_repositories.GetWalSegmentRepository(),

@@ -16,6 +16,7 @@ import (
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/tools"
 	"databasus-backend/internal/util/walmath"
@@ -137,6 +138,7 @@ type WalStreamSpec struct {
 	SourceDB       *postgresql_physical.PostgresqlPhysicalDatabase
 	StorageID      uuid.UUID
 	Storage        storages.StorageFileSaver
+	FileStore      *storage_files.Store
 	Encryption     backups_core_enums.BackupEncryption
 	MasterKey      string
 	FieldEncryptor util_encryption.FieldEncryptor
@@ -228,6 +230,7 @@ func NewWalStreamSupervisor(spec WalStreamSpec) *WalStreamSupervisor {
 		DatabaseID:          spec.DatabaseID,
 		StorageID:           spec.StorageID,
 		Storage:             spec.Storage,
+		FileStore:           spec.FileStore,
 		Encryption:          spec.Encryption,
 		MasterKey:           spec.MasterKey,
 		FieldEncryptor:      spec.FieldEncryptor,

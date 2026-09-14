@@ -24,6 +24,7 @@ import (
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
 	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	tasks_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/walmath"
@@ -36,6 +37,7 @@ type PhysicalWalStreamSupervisor struct {
 	databaseService          *databases.DatabaseService
 	backupConfigService      *backups_config_physical.BackupConfigService
 	storageService           *storages.StorageService
+	fileStore                *storage_files.Store
 	walSegmentRepo           *physical_repositories.PhysicalWalSegmentRepository
 	historyRepo              *physical_repositories.PhysicalWalHistoryRepository
 	walStreamerRepo          *physical_repositories.PhysicalWalStreamerRepository
@@ -275,6 +277,7 @@ func (s *PhysicalWalStreamSupervisor) startStreamer(
 		IsBastionReachable:        tunneledDatabase.IsBastionReachable,
 		StorageID:                 storage.ID,
 		Storage:                   storage,
+		FileStore:                 s.fileStore,
 		Encryption:                backupConfig.Encryption,
 		MasterKey:                 masterKey,
 		FieldEncryptor:            s.fieldEncryptor,

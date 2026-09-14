@@ -95,6 +95,7 @@ func CreateTestWalStreamSupervisor(spec WalStreamSupervisorTestSpec) *PhysicalWa
 		databases.GetDatabaseService(),
 		backups_config_physical.GetBackupConfigService(),
 		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		physical_repositories.GetWalSegmentRepository(),
 		physical_repositories.GetWalHistoryRepository(),
 		physical_repositories.GetWalStreamerRepository(),

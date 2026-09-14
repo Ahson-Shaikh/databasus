@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
+	"gorm.io/gorm"
 
 	backups_core_enums "databasus-backend/internal/features/backups/backups/core/enums"
 	physical_dto "databasus-backend/internal/features/backups/backups/core/physical/dto"
@@ -21,6 +22,8 @@ import (
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	backup_encryption "databasus-backend/internal/features/backups/backups/encryption"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
+	db "databasus-backend/internal/storage"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/walmath"
 )
@@ -39,6 +42,7 @@ type WalUploadDeps struct {
 	DatabaseID          uuid.UUID
 	StorageID           uuid.UUID
 	Storage             storages.StorageFileSaver
+	FileStore           *storage_files.Store
 	Encryption          backups_core_enums.BackupEncryption
 	MasterKey           string
 	FieldEncryptor      util_encryption.FieldEncryptor
@@ -229,7 +233,9 @@ func (u *WalUploader) uploadAndCommit(
 	localPath string,
 	claim *physical_models.PhysicalWalSegment,
 ) error {
-	objectName := walSegmentObjectName(claim.DatabaseID, claim.TimelineID, claim.WalFilename)
+	// One name per upload attempt, minted here and passed down: a retry under the
+	// same segment identity must not address the object a pending cleanup owns.
+	objectName := walSegmentObjectName(claim.DatabaseID, claim.TimelineID, claim.WalFilename, uuid.New())
 
 	artifact, salt, iv, err := buildWalSegmentArtifactReader(localPath, u.deps.Encryption, u.deps.MasterKey, claim.ID)
 	if err != nil {
@@ -241,10 +247,11 @@ func (u *WalUploader) uploadAndCommit(
 	saveCtx, cancel := context.WithTimeout(ctx, walSegmentUploadTimeout)
 	defer cancel()
 
-	if err := u.deps.Storage.SaveFile(saveCtx, u.deps.FieldEncryptor, u.deps.Logger, objectName, artifact); err != nil {
+	receipt, err := u.deps.FileStore.WriteFile(saveCtx, u.reference(objectName), artifact)
+	if err != nil {
 		artifact.abort(err)
 		_, _ = artifact.wait()
-		u.deleteObject(objectName)
+		u.discardAttempt(ctx, objectName)
 		u.releaseClaim(claim.ID)
 
 		return fmt.Errorf("upload wal segment: %w", err)
@@ -252,35 +259,40 @@ func (u *WalUploader) uploadAndCommit(
 
 	compressedSizeBytes, err := artifact.wait()
 	if err != nil {
-		u.deleteObject(objectName)
+		u.discardAttempt(ctx, objectName)
 		u.releaseClaim(claim.ID)
 
 		return fmt.Errorf("stream wal segment artifact: %w", err)
 	}
 
-	if err := u.uploadSidecar(saveCtx, claim, salt, iv, compressedSizeBytes); err != nil {
-		u.deleteObject(objectName)
+	sidecarReceipt, err := u.uploadSidecar(saveCtx, claim, objectName, salt, iv, compressedSizeBytes)
+	if err != nil {
+		u.discardAttempt(ctx, objectName)
 		u.releaseClaim(claim.ID)
 
 		return fmt.Errorf("upload wal segment sidecar: %w", err)
 	}
 
-	committed, err := u.deps.WalSegmentRepo.MarkUploaded(
-		claim.ID, objectName, float64(compressedSizeBytes)/(1024*1024), nilIfEmpty(salt), nilIfEmpty(iv),
-	)
+	committed, err := u.commitSegment(ctx, commitSegmentSpec{
+		Claim:            claim,
+		ObjectName:       objectName,
+		CompressedSizeMb: float64(compressedSizeBytes) / (1024 * 1024),
+		Salt:             salt,
+		IV:               iv,
+		Receipts:         []storage_files.WriteReceipt{receipt, sidecarReceipt},
+	})
 	if err != nil {
 		return fmt.Errorf("commit wal segment: %w", err)
 	}
 
 	if !committed {
-		// DeleteFull cascade caught the claim mid-upload: the bytes are an orphan
-		// the cleaner can no longer see (its row is gone), so delete them here.
+		// DeleteFull cascade caught the claim mid-upload, so the row that would
+		// name these bytes is gone and nothing published them.
 		u.deps.Logger.DebugContext(ctx,
 			"discarding an uploaded wal segment, its chain was deleted mid-upload",
 			"wal_filename", claim.WalFilename, "wal_segment_id", claim.ID)
 
-		u.deleteObject(objectName)
-		u.deleteObject(objectName + metadataSuffix)
+		u.discardAttempt(ctx, objectName)
 		u.removeLocal(localPath, claim.WalFilename)
 
 		return nil
@@ -355,9 +367,10 @@ func (u *WalUploader) probeChainGap(claim *physical_models.PhysicalWalSegment) {
 func (u *WalUploader) uploadSidecar(
 	ctx context.Context,
 	claim *physical_models.PhysicalWalSegment,
+	objectName string,
 	salt, iv string,
 	compressedSizeBytes int64,
-) error {
+) (storage_files.WriteReceipt, error) {
 	sidecar := physical_dto.PhysicalWalSegmentMetadata{
 		WalSegmentID:        claim.ID,
 		DatabaseID:          claim.DatabaseID,
@@ -374,12 +387,12 @@ func (u *WalUploader) uploadSidecar(
 
 	body, err := json.Marshal(sidecar)
 	if err != nil {
-		return fmt.Errorf("marshal wal segment sidecar: %w", err)
+		return storage_files.WriteReceipt{}, fmt.Errorf("marshal wal segment sidecar: %w", err)
 	}
 
-	objectName := walSegmentObjectName(claim.DatabaseID, claim.TimelineID, claim.WalFilename) + metadataSuffix
+	sidecarName := objectName + metadataSuffix
 
-	return u.deps.Storage.SaveFile(ctx, u.deps.FieldEncryptor, u.deps.Logger, objectName, bytes.NewReader(body))
+	return u.deps.FileStore.WriteFile(ctx, u.reference(sidecarName), bytes.NewReader(body))
 }
 
 func (u *WalUploader) releaseClaim(id uuid.UUID) {
@@ -388,15 +401,56 @@ func (u *WalUploader) releaseClaim(id uuid.UUID) {
 	}
 }
 
-func (u *WalUploader) deleteObject(objectName string) {
-	if err := u.deps.Storage.DeleteFile(
-		context.Background(),
-		u.deps.FieldEncryptor,
-		u.deps.Logger,
-		objectName,
-	); err != nil {
-		u.deps.Logger.Warn("failed to delete orphaned wal storage object", "file_name", objectName, "error", err)
+func (u *WalUploader) reference(objectName string) storage_files.StoredFileReference {
+	return storage_files.StoredFileReference{StorageID: u.deps.StorageID, FileName: objectName}
+}
+
+// discardAttempt hands the attempt's artifact and sidecar back to cleanup. It runs
+// on its own connection because no catalog row survives to carry them.
+func (u *WalUploader) discardAttempt(ctx context.Context, objectName string) {
+	references := []storage_files.StoredFileReference{
+		u.reference(objectName),
+		u.reference(objectName + metadataSuffix),
 	}
+
+	if err := u.deps.FileStore.RequestFileDeletions(
+		context.WithoutCancel(ctx), db.GetDb(), references,
+	); err != nil {
+		u.deps.Logger.Warn("failed to discard a wal segment attempt", "file_name", objectName, "error", err)
+	}
+}
+
+type commitSegmentSpec struct {
+	Claim            *physical_models.PhysicalWalSegment
+	ObjectName       string
+	CompressedSizeMb float64
+	Salt             string
+	IV               string
+	Receipts         []storage_files.WriteReceipt
+}
+
+// commitSegment publishes the segment and spends its receipts together, so the
+// files are kept only if the row that names them commits.
+func (u *WalUploader) commitSegment(ctx context.Context, spec commitSegmentSpec) (bool, error) {
+	committed := false
+
+	err := db.GetDb().Transaction(func(tx *gorm.DB) error {
+		updated, err := u.deps.WalSegmentRepo.MarkUploadedInTransaction(
+			tx, spec.Claim.ID, spec.ObjectName, spec.CompressedSizeMb, nilIfEmpty(spec.Salt), nilIfEmpty(spec.IV),
+		)
+		if err != nil {
+			return err
+		}
+
+		committed = updated
+		if !updated {
+			return nil
+		}
+
+		return u.deps.FileStore.ConfirmFileWrites(ctx, tx, spec.Receipts)
+	})
+
+	return committed, err
 }
 
 func (u *WalUploader) removeLocal(localPath, walFilename string) {
@@ -440,8 +494,13 @@ func segmentBounds(walFilename string, segSizeBytes int64) (timelineID int, star
 // "<db>-WAL-tl<TL>-<wal_filename>.zst". No UUID — the insert-first claim model
 // guarantees a single writer per (database_id, timeline_id, wal_filename), so the
 // deterministic name is safe and dedup-friendly (matches the .history convention).
-func walSegmentObjectName(databaseID uuid.UUID, timelineID int, walFilename string) string {
-	return fmt.Sprintf("%s-WAL-tl%d-%s.zst", databaseID, timelineID, walFilename)
+func walSegmentObjectName(
+	databaseID uuid.UUID,
+	timelineID int,
+	walFilename string,
+	attemptID uuid.UUID,
+) string {
+	return fmt.Sprintf("%s-WAL-tl%d-%s-%s.zst", databaseID, timelineID, walFilename, attemptID)
 }
 
 type walSegmentArtifactReader struct {
