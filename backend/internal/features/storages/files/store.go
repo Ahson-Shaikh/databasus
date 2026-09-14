@@ -75,7 +75,7 @@ func (s *Store) WriteFile(
 	}
 
 	kept, err := s.repository.SetNotBeforeIfGeneration(
-		db.GetDb(), pending.ID, pending.AttemptCount, s.timings.CommitWindow,
+		db.GetDb(), pending.ID, pending.Generation, s.timings.CommitWindow,
 	)
 	if err != nil {
 		return WriteReceipt{}, err
@@ -88,7 +88,7 @@ func (s *Store) WriteFile(
 	return WriteReceipt{
 		PendingDeletionID: pending.ID,
 		Reference:         reference,
-		Generation:        pending.AttemptCount,
+		Generation:        pending.Generation,
 	}, nil
 }
 
@@ -150,7 +150,7 @@ func (s *Store) GetTimings() Timings {
 // anyway. The write is over either way, so the failure is logged, not returned.
 func (s *Store) makeEligibleNow(ctx context.Context, pending *PendingDeletion) {
 	if _, err := s.repository.SetNotBeforeIfGeneration(
-		db.GetDb(), pending.ID, pending.AttemptCount, 0,
+		db.GetDb(), pending.ID, pending.Generation, 0,
 	); err != nil {
 		s.logger.ErrorContext(ctx, "failed to schedule cleanup for a failed write",
 			"storage_id", pending.StorageID,

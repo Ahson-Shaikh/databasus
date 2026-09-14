@@ -22,8 +22,8 @@ type Dependencies struct {
 }
 
 type ClaimRequest struct {
-	Limit          int
-	AttemptTimeout time.Duration
+	Limit        int
+	AttemptLease time.Duration
 	// ExcludedIDs are the writes running in this process, which have an
 	// obligation but no owner willing to let it go yet.
 	ExcludedIDs []uuid.UUID
@@ -42,8 +42,8 @@ type StoredFileReference struct {
 }
 
 // Permission to publish one uploaded file. Generation is the pending row's
-// attempt count when the upload finished: anything that takes the file away from
-// its writer increments it, so a receipt that no longer matches cannot confirm.
+// generation when the upload finished: anything that takes the file away from its
+// writer raises it, so a receipt that no longer matches cannot confirm.
 type WriteReceipt struct {
 	PendingDeletionID uuid.UUID
 	Reference         StoredFileReference

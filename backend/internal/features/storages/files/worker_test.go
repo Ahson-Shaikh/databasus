@@ -187,6 +187,29 @@ func Test_RunOnce_WhenProviderFailsThenRecovers_RetriesUntilTheFileIsGone(t *tes
 	assert.Nil(t, pending)
 }
 
+func Test_RunOnce_WhenDeletionWasRequestedRepeatedly_CountsOnlyTheAttempt(t *testing.T) {
+	provider := &fakeProvider{deleteErr: errors.New("storage is unavailable")}
+	locator := &fakeLocator{provider: provider}
+	store := newTestStore(locator)
+	worker := newTestWorker(t, store, locator)
+	reference := StoredFileReference{StorageID: createStorageRow(t), FileName: "backup-1"}
+
+	for range 3 {
+		require.NoError(t, inTransaction(t, func(tx *gorm.DB) error {
+			return store.RequestFileDeletions(t.Context(), tx, []StoredFileReference{reference})
+		}))
+	}
+
+	worker.RunOnce(t.Context())
+
+	pending, err := store.repository.FindByReference(db.GetDb(), reference)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	assert.Equal(t, 3, pending.Generation, "each request takes the file from whoever held it")
+	assert.Equal(t, 1, pending.AttemptCount,
+		"three requests and one failed deletion is one attempt, so the retry waits the base delay")
+}
+
 func Test_RunOnce_WhenAnotherCallerTakesTheFileMidAttempt_DoesNotReleaseTheirObligation(t *testing.T) {
 	provider := &fakeProvider{}
 	locator := &fakeLocator{provider: provider}
@@ -443,7 +466,7 @@ func Test_TimingsForTest_ShrinksEveryBoundReachingStoreAndWorker(t *testing.T) {
 	shrunk := TimingsForTest()
 
 	assert.Less(t, shrunk.CommitWindow, production.CommitWindow)
-	assert.Less(t, shrunk.AttemptTimeout, production.AttemptTimeout)
+	assert.Less(t, shrunk.AttemptLease, production.AttemptLease)
 	assert.Less(t, shrunk.RetryBaseDelay, production.RetryBaseDelay)
 	assert.Less(t, shrunk.RetryMaxDelay, production.RetryMaxDelay)
 	assert.Less(t, shrunk.WorkerTick, production.WorkerTick)

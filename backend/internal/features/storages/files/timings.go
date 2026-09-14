@@ -9,9 +9,9 @@ type Timings struct {
 	// CommitWindow is how long a file may stay recorded but unclaimed by any
 	// catalog transaction before cleanup assumes its publisher is never coming.
 	CommitWindow time.Duration
-	// AttemptTimeout bounds one provider deletion and is also how far a claim
+	// AttemptLease bounds one provider deletion and is also how far a claim
 	// pushes not_before, so a stalled call cannot hold its row forever.
-	AttemptTimeout time.Duration
+	AttemptLease   time.Duration
 	RetryBaseDelay time.Duration
 	RetryMaxDelay  time.Duration
 	WorkerTick     time.Duration
@@ -21,7 +21,7 @@ type Timings struct {
 func ProductionTimings() Timings {
 	return Timings{
 		CommitWindow:   15 * time.Minute,
-		AttemptTimeout: 2 * time.Minute,
+		AttemptLease:   2 * time.Minute,
 		RetryBaseDelay: 30 * time.Second,
 		RetryMaxDelay:  time.Hour,
 		WorkerTick:     time.Minute,

@@ -62,9 +62,9 @@ func (r *PendingDeletionRepository) InsertOrTake(tx *gorm.DB, references []Store
 		INSERT INTO storage_pending_deletions (storage_id, file_name, not_before)
 		VALUES %s
 		ON CONFLICT (storage_id, file_name) DO UPDATE
-		SET not_before    = now(),
-		    attempt_count = storage_pending_deletions.attempt_count + 1,
-		    updated_at    = now()`, strings.Join(placeholders, ", "))
+		SET not_before = now(),
+		    generation = storage_pending_deletions.generation + 1,
+		    updated_at = now()`, strings.Join(placeholders, ", "))
 
 	if err := tx.Exec(statement, args...).Error; err != nil {
 		return fmt.Errorf("record pending deletions: %w", err)
@@ -82,7 +82,7 @@ func (r *PendingDeletionRepository) CompleteIfGeneration(
 	generation int,
 ) (bool, error) {
 	result := tx.
-		Where("id = ? AND attempt_count = ?", id, generation).
+		Where("id = ? AND generation = ?", id, generation).
 		Delete(&PendingDeletion{})
 	if result.Error != nil {
 		return false, fmt.Errorf("complete pending deletion: %w", result.Error)
@@ -98,7 +98,7 @@ func (r *PendingDeletionRepository) SetNotBeforeIfGeneration(
 	dueIn time.Duration,
 ) (bool, error) {
 	result := tx.Model(&PendingDeletion{}).
-		Where("id = ? AND attempt_count = ?", id, generation).
+		Where("id = ? AND generation = ?", id, generation).
 		Updates(map[string]any{
 			"not_before": databaseTimeIn(dueIn),
 			"updated_at": gorm.Expr("now()"),
@@ -118,7 +118,7 @@ func (r *PendingDeletionRepository) RescheduleIfGeneration(
 	lastError string,
 ) (bool, error) {
 	result := tx.Model(&PendingDeletion{}).
-		Where("id = ? AND attempt_count = ?", id, generation).
+		Where("id = ? AND generation = ?", id, generation).
 		Updates(map[string]any{
 			"not_before": databaseTimeIn(dueIn),
 			"last_error": lastError,
@@ -131,16 +131,16 @@ func (r *PendingDeletionRepository) RescheduleIfGeneration(
 	return result.RowsAffected == 1, nil
 }
 
-// Incrementing the generation invalidates any receipt still outstanding for these
-// files, and pushing not_before past the attempt keeps a stalled provider call from
-// holding a row forever. SKIP LOCKED keeps an open deletion request from stalling
-// the whole batch.
+// Raising the generation invalidates any receipt still outstanding for these files,
+// and pushing not_before by the lease keeps a stalled provider call from holding a
+// row forever. SKIP LOCKED keeps an open deletion request from stalling the whole
+// batch.
 func (r *PendingDeletionRepository) ClaimDue(
 	tx *gorm.DB,
 	request ClaimRequest,
 ) ([]PendingDeletion, error) {
 	exclusion := ""
-	args := []any{request.AttemptTimeout.Seconds()}
+	args := []any{request.AttemptLease.Seconds()}
 
 	if len(request.ExcludedIDs) > 0 {
 		exclusion = "AND id NOT IN (?)"
@@ -152,7 +152,8 @@ func (r *PendingDeletionRepository) ClaimDue(
 
 	statement := fmt.Sprintf(`
 		UPDATE storage_pending_deletions
-		SET attempt_count = attempt_count + 1,
+		SET generation = generation + 1,
+		    attempt_count = attempt_count + 1,
 		    not_before = now() + (? * interval '1 second'),
 		    updated_at = now()
 		WHERE id IN (

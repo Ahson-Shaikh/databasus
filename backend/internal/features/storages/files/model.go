@@ -13,9 +13,12 @@ type PendingDeletion struct {
 	StorageID uuid.UUID `gorm:"column:storage_id;not null;type:uuid"`
 	FileName  string    `gorm:"column:file_name;not null;type:text"`
 	NotBefore time.Time `gorm:"column:not_before;not null"`
-	// Retry counter and receipt generation at once: every event that takes the
-	// file away from its writer increments it, which invalidates the receipt the
-	// writer is holding.
+	// Generation is what a write receipt matches. Every event that takes the file
+	// away from its writer raises it, which invalidates the receipt the writer is
+	// holding.
+	Generation int `gorm:"column:generation;not null"`
+	// AttemptCount counts deletion attempts and nothing else, so the backoff grows
+	// with failures rather than with how often the file was requested.
 	AttemptCount int       `gorm:"column:attempt_count;not null"`
 	LastError    *string   `gorm:"column:last_error;type:text"`
 	CreatedAt    time.Time `gorm:"column:created_at;not null"`

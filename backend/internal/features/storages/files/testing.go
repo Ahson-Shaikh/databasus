@@ -16,7 +16,7 @@ const drainDeadlineForTest = 30 * time.Second
 func TimingsForTest() Timings {
 	return Timings{
 		CommitWindow:   2 * time.Second,
-		AttemptTimeout: time.Second,
+		AttemptLease:   time.Second,
 		RetryBaseDelay: 10 * time.Millisecond,
 		RetryMaxDelay:  50 * time.Millisecond,
 		WorkerTick:     10 * time.Millisecond,

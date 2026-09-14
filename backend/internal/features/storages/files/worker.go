@@ -102,8 +102,9 @@ func (w *DeletionWorker) RunOnce(ctx context.Context) {
 
 // DrainStorage empties one storage's obligations before the storage row, and the
 // credentials with it, disappear. It returns the names it could not remove, which
-// is what the caller has to tell the user about. The budget bounds it because it
-// runs in the request that deletes the storage.
+// is what the caller has to tell the user about. The budget stops it starting more
+// files, because it runs in the request that deletes the storage; a call already
+// under way runs to the provider's own deadline.
 func (w *DeletionWorker) DrainStorage(
 	ctx context.Context,
 	storageID uuid.UUID,
@@ -124,7 +125,7 @@ func (w *DeletionWorker) DrainStorage(
 			continue
 		}
 
-		attemptCtx, cancel := context.WithTimeout(ctx, w.timings.AttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, w.timings.AttemptLease)
 		deleteErr := w.deleteFromProvider(attemptCtx, w.logger, obligation)
 
 		cancel()
@@ -142,9 +143,9 @@ func (w *DeletionWorker) claimDue() ([]PendingDeletion, error) {
 
 	err := w.store.withLiveWrites(func(excluded []uuid.UUID) error {
 		batch, claimErr := w.repository.ClaimDue(db.GetDb(), ClaimRequest{
-			Limit:          w.timings.ClaimBatchSize,
-			AttemptTimeout: w.timings.AttemptTimeout,
-			ExcludedIDs:    excluded,
+			Limit:        w.timings.ClaimBatchSize,
+			AttemptLease: w.timings.AttemptLease,
+			ExcludedIDs:  excluded,
 		})
 		claimed = batch
 
@@ -157,13 +158,13 @@ func (w *DeletionWorker) claimDue() ([]PendingDeletion, error) {
 func (w *DeletionWorker) attemptDeletion(ctx context.Context, passLogger *slog.Logger, pending PendingDeletion) {
 	attemptLogger := passLogger.With("storage_id", pending.StorageID, "file_name", pending.FileName)
 
-	attemptCtx, cancel := context.WithTimeout(ctx, w.timings.AttemptTimeout)
+	attemptCtx, cancel := context.WithTimeout(ctx, w.timings.AttemptLease)
 	defer cancel()
 
 	err := w.deleteFromProvider(attemptCtx, attemptLogger, pending)
 	if err == nil {
 		released, completeErr := w.repository.CompleteIfGeneration(
-			db.GetDb(), pending.ID, pending.AttemptCount,
+			db.GetDb(), pending.ID, pending.Generation,
 		)
 		if completeErr != nil {
 			attemptLogger.ErrorContext(ctx, "failed to release a completed file deletion", "error", completeErr)
@@ -186,7 +187,7 @@ func (w *DeletionWorker) attemptDeletion(ctx context.Context, passLogger *slog.L
 	retryDelay := w.retryDelay(pending.AttemptCount)
 
 	rescheduled, rescheduleErr := w.repository.RescheduleIfGeneration(
-		db.GetDb(), pending.ID, pending.AttemptCount, retryDelay, sanitizeError(err),
+		db.GetDb(), pending.ID, pending.Generation, retryDelay, sanitizeError(err),
 	)
 	if rescheduleErr != nil {
 		attemptLogger.ErrorContext(ctx, "failed to reschedule a file deletion", "error", rescheduleErr)

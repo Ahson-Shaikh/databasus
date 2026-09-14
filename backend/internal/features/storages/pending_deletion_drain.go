@@ -10,8 +10,10 @@ import (
 	"databasus-backend/internal/util/logger"
 )
 
-// The drain runs in the request that deletes the storage, so an unreachable
-// provider costs the user this much waiting and no more.
+// The drain runs in the request that deletes the storage, so this is how long it
+// keeps starting files. The deadline is read between files and a provider holds
+// its own deadline on the call it already began, so an unreachable one costs this
+// plus one provider timeout.
 const storageDeletionDrainBudget = 10 * time.Second
 
 // A deleted storage takes its pending deletions with it, so this is the last

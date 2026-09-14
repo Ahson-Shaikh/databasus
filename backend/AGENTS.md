@@ -261,7 +261,9 @@ Two rules follow from that:
   and history carry an attempt UUID of their own.
 - **A provider's `DeleteFile` owes every representation it derives from the name**:
   chunk objects and manifests, incomplete multipart uploads, staged blocks,
-  temporary and partial files. Only a confirmed absence counts as success.
+  temporary and partial files. Only a confirmed absence counts as success. It puts
+  its own deadline on the call and must stay under `Timings.AttemptLease`, or the
+  worker reclaims the row while the attempt is still running.
 
 A test that asserts a file is gone drives the worker first, through
 `storages.DrainStorageFileDeletions`. Nothing observes cleanup by sleeping.

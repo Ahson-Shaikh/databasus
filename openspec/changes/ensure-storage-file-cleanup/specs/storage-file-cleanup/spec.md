@@ -194,7 +194,7 @@ Every storage provider SHALL treat deletion as removal of all physical state der
 
 ### Requirement: Failed deletions remain retryable and observable
 
-The system SHALL retry failed deletions with exponential delay, a maximum delay and jitter. It SHALL persist the attempt count, the next attempt time and a sanitized bounded error message. Each worker pass SHALL have a stable `job_name` and a fresh `job_id`, and SHALL report how many obligations are pending, how many are overdue and the age of the oldest one. Every deletion attempt it logs SHALL identify the job, storage, file, attempt and next retry without exposing credentials.
+The system SHALL retry failed deletions with exponential delay, a maximum delay and jitter, grown from the number of deletion attempts alone. It SHALL persist that attempt count, the next attempt time and a sanitized bounded error message. Each worker pass SHALL have a stable `job_name` and a fresh `job_id`, and SHALL report how many obligations are pending, how many are overdue and the age of the oldest one. Every deletion attempt it logs SHALL identify the job, storage, file, attempt and next retry without exposing credentials.
 
 #### Scenario: Storage outage persists
 
@@ -207,6 +207,12 @@ The system SHALL retry failed deletions with exponential delay, a maximum delay 
 - **WHEN** a provider rejects deletion because the configured credentials lack the permission
 - **THEN** the recorded error names the missing permission as the provider reported it
 - **AND** the obligation stays pending so it succeeds once the permission is granted
+
+#### Scenario: A file is requested for deletion more than once before any attempt
+
+- **WHEN** several callers request deletion of the same file before the worker has attempted it
+- **THEN** the file carries one obligation
+- **AND** its first failed attempt waits the base retry delay, because a request is not an attempt
 
 #### Scenario: Storage recovers
 

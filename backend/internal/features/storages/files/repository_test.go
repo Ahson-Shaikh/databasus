@@ -45,6 +45,7 @@ func Test_InsertIfAbsent_WhenNameIsFree_RegistersObligation(t *testing.T) {
 	pending, err := repository.InsertIfAbsent(db.GetDb(), uuid.New(), reference, time.Hour)
 
 	require.NoError(t, err)
+	assert.Equal(t, 0, pending.Generation)
 	assert.Equal(t, 0, pending.AttemptCount)
 	assert.Equal(t, reference, pending.GetReference())
 }
@@ -90,7 +91,9 @@ func Test_InsertOrTake_WhenRequestedTwice_KeepsOneRowAndRaisesGeneration(t *test
 
 	require.NoError(t, err)
 	require.NotNil(t, found)
-	assert.Equal(t, 1, found.AttemptCount)
+	assert.Equal(t, 1, found.Generation)
+	assert.Equal(t, 0, found.AttemptCount,
+		"asking for a file again is not a deletion attempt and must not advance the backoff")
 }
 
 func Test_InsertOrTake_WhenBatchRepeatsAReference_DoesNotFail(t *testing.T) {
@@ -104,7 +107,7 @@ func Test_InsertOrTake_WhenBatchRepeatsAReference_DoesNotFail(t *testing.T) {
 	found, findErr := repository.FindByReference(db.GetDb(), reference)
 	require.NoError(t, findErr)
 	require.NotNil(t, found)
-	assert.Equal(t, 0, found.AttemptCount)
+	assert.Equal(t, 0, found.Generation)
 }
 
 func Test_InsertOrTake_WhenBatchIsEmpty_DoesNothing(t *testing.T) {
@@ -122,7 +125,7 @@ func Test_InsertOrTake_WhenWriterHoldsTheRow_TakesItByRaisingGeneration(t *testi
 
 	require.NoError(t, repository.InsertOrTake(db.GetDb(), []StoredFileReference{reference}))
 
-	completed, err := repository.CompleteIfGeneration(db.GetDb(), pending.ID, pending.AttemptCount)
+	completed, err := repository.CompleteIfGeneration(db.GetDb(), pending.ID, pending.Generation)
 
 	require.NoError(t, err)
 	assert.False(t, completed, "the writer's receipt must not release an obligation someone else took")
@@ -135,7 +138,7 @@ func Test_CompleteIfGeneration_WhenGenerationMatches_ReleasesObligation(t *testi
 	pending, err := repository.InsertIfAbsent(db.GetDb(), uuid.New(), reference, 0)
 	require.NoError(t, err)
 
-	completed, err := repository.CompleteIfGeneration(db.GetDb(), pending.ID, pending.AttemptCount)
+	completed, err := repository.CompleteIfGeneration(db.GetDb(), pending.ID, pending.Generation)
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -152,7 +155,7 @@ func Test_RescheduleIfGeneration_WhenGenerationIsStale_ChangesNothing(t *testing
 	require.NoError(t, err)
 
 	rescheduled, err := repository.RescheduleIfGeneration(
-		db.GetDb(), pending.ID, pending.AttemptCount+1, time.Hour, "stale",
+		db.GetDb(), pending.ID, pending.Generation+1, time.Hour, "stale",
 	)
 
 	require.NoError(t, err)
@@ -171,7 +174,7 @@ func Test_ClaimDue_WhenNothingIsDue_ReturnsEmpty(t *testing.T) {
 	_, err := repository.InsertIfAbsent(db.GetDb(), uuid.New(), reference, time.Hour)
 	require.NoError(t, err)
 
-	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 10, AttemptTimeout: time.Minute})
+	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 10, AttemptLease: time.Minute})
 
 	require.NoError(t, err)
 	assert.NotContains(t, referencesOf(claimed), reference)
@@ -183,15 +186,16 @@ func Test_ClaimDue_WhenRowIsDue_TakesItAndRaisesGeneration(t *testing.T) {
 
 	require.NoError(t, repository.InsertOrTake(db.GetDb(), []StoredFileReference{reference}))
 
-	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 100, AttemptTimeout: time.Minute})
+	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 100, AttemptLease: time.Minute})
 	require.NoError(t, err)
 	require.Contains(t, referencesOf(claimed), reference)
 
 	found, err := repository.FindByReference(db.GetDb(), reference)
 	require.NoError(t, err)
 	require.NotNil(t, found)
+	assert.Equal(t, 1, found.Generation)
 	assert.Equal(t, 1, found.AttemptCount)
-	assert.False(t, isDue(t, reference), "a claimed row is not due again until its attempt times out")
+	assert.False(t, isDue(t, reference), "a claimed row is not due again until its lease runs out")
 }
 
 func Test_ClaimDue_WhenWriteIsLive_SkipsIt(t *testing.T) {
@@ -204,7 +208,7 @@ func Test_ClaimDue_WhenWriteIsLive_SkipsIt(t *testing.T) {
 	require.NoError(t, err)
 
 	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{
-		Limit: 100, AttemptTimeout: time.Minute, ExcludedIDs: []uuid.UUID{live.ID},
+		Limit: 100, AttemptLease: time.Minute, ExcludedIDs: []uuid.UUID{live.ID},
 	})
 
 	require.NoError(t, err)
@@ -240,7 +244,7 @@ func Test_ClaimDue_WhenAnotherTransactionHoldsTheRow_SkipsItInsteadOfWaiting(t *
 	<-blocked
 
 	start := time.Now()
-	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 100, AttemptTimeout: time.Minute})
+	claimed, err := repository.ClaimDue(db.GetDb(), ClaimRequest{Limit: 100, AttemptLease: time.Minute})
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
