@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -166,14 +167,17 @@ func (l *LocalStorage) DeleteFile(
 	logger *slog.Logger,
 	fileName string,
 ) error {
-	filePath := filepath.Join(config.GetEnv().DataFolder, fileName)
-
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return nil
+	// An interrupted write leaves the staging copy behind, and a cross-filesystem
+	// publication can leave a partial file at the final path.
+	paths := []string{
+		filepath.Join(config.GetEnv().DataFolder, fileName),
+		filepath.Join(config.GetEnv().TempFolder, fileName),
 	}
 
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete file: %w", err)
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("failed to delete file: %w", err)
+		}
 	}
 
 	logger.DebugContext(ctx, "deleted file from local storage", "file_name", fileName)

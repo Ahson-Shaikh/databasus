@@ -266,6 +266,22 @@ func Test_RunStream_WhenStorageSaveFails_ReturnsStorageUploadFailedNotStall(t *t
 		"a storage failure that cancels the stream must not be reported as a network stall")
 }
 
+func Test_RunStream_WhenPgBasebackupWritesBytesThenFails_LeavesUploadedArtifact(t *testing.T) {
+	storage := newFakeStorage()
+
+	outcome, err := runStream(
+		t.Context(),
+		testRunStreamParams(storage, physical_enums.PhysicalBackupCompressionNone),
+		shellBuildCmd(`printf 'partial physical backup'; exit 1`),
+		classifyFullStreamError,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, outcome.ErrorReason)
+	assert.Equal(t, physical_enums.PhysicalBackupStatusError, outcome.Status)
+	assert.Equal(t, physical_enums.PhysicalBackupErrorPgBasebackupFailed, *outcome.ErrorReason)
+	assert.Equal(t, []byte("partial physical backup"), storage.saved["test-obj"])
+}
+
 func Test_RunStream_WhenManifestWalkFails_ReturnsManifestCorrupted(t *testing.T) {
 	// 1 KB of non-tar bytes: pg exits clean, but the walk hits a bad tar header
 	// (not a truncation), so the manifest goroutine flags genuine corruption.

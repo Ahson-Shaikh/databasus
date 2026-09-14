@@ -229,6 +229,10 @@ func (s *GoogleDriveStorage) DeleteFile(
 
 	if err := s.withRetryOnAuth(deleteCtx, encryptor, func(driveService *drive.Service) error {
 		folderID, err := s.findBackupsFolder(driveService)
+		if errors.Is(err, errBackupsFolderNotFound) {
+			return nil
+		}
+
 		if err != nil {
 			return fmt.Errorf("failed to find backups folder: %w", err)
 		}
@@ -716,7 +720,6 @@ func (s *GoogleDriveStorage) ensureBackupsFolderExists(
 	return folder.Id, nil
 }
 
-// findBackupsFolder finds the databasus_backups folder ID
 func (s *GoogleDriveStorage) findBackupsFolder(driveService *drive.Service) (string, error) {
 	query := "name = 'databasus_backups' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
 
@@ -730,7 +733,7 @@ func (s *GoogleDriveStorage) findBackupsFolder(driveService *drive.Service) (str
 	}
 
 	if len(results.Files) == 0 {
-		return "", fmt.Errorf("databasus_backups folder not found")
+		return "", errBackupsFolderNotFound
 	}
 
 	return results.Files[0].Id, nil

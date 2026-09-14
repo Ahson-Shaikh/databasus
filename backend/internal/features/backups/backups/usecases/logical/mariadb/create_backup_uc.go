@@ -24,7 +24,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	mariadbtypes "databasus-backend/internal/features/databases/databases/mariadb"
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
-	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	"databasus-backend/internal/util/encryption"
 	io_utils "databasus-backend/internal/util/io"
 	"databasus-backend/internal/util/namelist"
@@ -69,10 +69,10 @@ func (uc *CreateMariadbBackupUsecase) Execute(
 	backup *backups_core_logical.LogicalBackup,
 	backupConfig *backups_config_logical.LogicalBackupConfig,
 	db *databases.Database,
-	storage *storages.Storage,
+	fileStore backups_core_logical.BackupFileStore,
 	backupProgressListener func(completedMBs float64),
-) (*backups_core_logical.BackupMetadata, error) {
-	logger := uc.logger.With("database_id", db.ID, "storage_id", storage.ID)
+) (*backups_core_logical.BackupArtifacts, error) {
+	logger := uc.logger.With("database_id", db.ID, "storage_id", backup.StorageID)
 
 	logger.InfoContext(ctx, "creating mariadb backup via mariadb-dump")
 
@@ -117,7 +117,7 @@ func (uc *CreateMariadbBackupUsecase) Execute(
 		tools.GetMariadbExecutable(mariadbDatabase.Version, tools.MariadbExecutableMariadbDump),
 		args,
 		decryptedPassword,
-		storage,
+		fileStore,
 		backupProgressListener,
 		mariadbDatabase,
 	)
@@ -182,10 +182,10 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 	mariadbBin string,
 	args []string,
 	password string,
-	storage *storages.Storage,
+	fileStore backups_core_logical.BackupFileStore,
 	backupProgressListener func(completedMBs float64),
 	mdbConfig *mariadbtypes.MariadbDatabase,
-) (*backups_core_logical.BackupMetadata, error) {
+) (*backups_core_logical.BackupArtifacts, error) {
 	uc.logger.InfoContext(parentCtx, "streaming MariaDB backup to storage", "mariadb_bin", mariadbBin)
 
 	ctx, cancel := uc.createBackupContext(parentCtx)
@@ -253,23 +253,17 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 		return nil, fmt.Errorf("failed to create zstd writer: %w", err)
 	}
 
-	saveErrCh := make(chan error, 1)
-	go func() {
-		saveErr := storage.SaveFile(
-			ctx,
-			uc.fieldEncryptor,
-			uc.logger,
-			backup.FileName,
-			storageReader,
-		)
-		if saveErr != nil {
-			_ = storageReader.CloseWithError(saveErr)
-			cancel(saveErr)
-		}
-		saveErrCh <- saveErr
-	}()
+	fileWrite := backups_core_logical.StartBackgroundFileWrite(
+		ctx,
+		fileStore,
+		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName},
+		storageReader,
+		cancel,
+	)
 
 	if err = cmd.Start(); err != nil {
+		uc.cleanupOnCancellation(zstdWriter, encryptionWriter, storageWriter, fileWrite.Errors)
+
 		return nil, fmt.Errorf("start %s: %w", filepath.Base(mariadbBin), err)
 	}
 
@@ -287,19 +281,19 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 	waitErr := cmd.Wait()
 
 	select {
-	case earlySaveErr := <-saveErrCh:
+	case earlySaveErr := <-fileWrite.Errors:
 		if earlySaveErr != nil {
 			_ = zstdWriter.Close()
 			_ = uc.closeWriters(encryptionWriter, storageWriter)
 			return nil, fmt.Errorf("save to storage: %w", earlySaveErr)
 		}
-		saveErrCh <- nil
+		fileWrite.Errors <- nil
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		uc.cleanupOnCancellation(zstdWriter, encryptionWriter, storageWriter, saveErrCh)
+		uc.cleanupOnCancellation(zstdWriter, encryptionWriter, storageWriter, fileWrite.Errors)
 		return nil, uc.classifyCancellation(ctx)
 	default:
 	}
@@ -308,11 +302,11 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 		uc.logger.ErrorContext(parentCtx, "failed to close zstd writer", "error", err)
 	}
 	if err := uc.closeWriters(encryptionWriter, storageWriter); err != nil {
-		<-saveErrCh
+		<-fileWrite.Errors
 		return nil, err
 	}
 
-	saveErr := <-saveErrCh
+	saveErr := <-fileWrite.Errors
 	stderrOutput := <-stderrCh
 
 	if waitErr == nil && copyErr == nil && saveErr == nil && backupProgressListener != nil {
@@ -329,7 +323,10 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 		return nil, fmt.Errorf("save to storage: %w", saveErr)
 	}
 
-	return &backupMetadata, nil
+	return &backups_core_logical.BackupArtifacts{
+		Metadata: &backupMetadata,
+		Receipts: []storage_files.WriteReceipt{<-fileWrite.Receipts},
+	}, nil
 }
 
 func (uc *CreateMariadbBackupUsecase) createTempMyCnfFile(
@@ -515,7 +512,7 @@ func (uc *CreateMariadbBackupUsecase) cleanupOnCancellation(
 	zstdWriter *zstd.Encoder,
 	encryptionWriter *backup_encryption.EncryptionWriter,
 	storageWriter io.WriteCloser,
-	saveErrCh chan error,
+	writeErrors chan error,
 ) {
 	if zstdWriter != nil {
 		go func() {
@@ -545,7 +542,7 @@ func (uc *CreateMariadbBackupUsecase) cleanupOnCancellation(
 		uc.logger.Error("failed to close pipe writer during cancellation", "error", err)
 	}
 
-	<-saveErrCh
+	<-writeErrors
 }
 
 func (uc *CreateMariadbBackupUsecase) closeWriters(

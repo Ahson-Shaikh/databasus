@@ -93,7 +93,7 @@ func (c *BackupCleaner) DeleteBackup(ctx context.Context, backup *backups_core_l
 		logger.WarnContext(ctx, "failed to delete backup file", "error", err)
 	}
 
-	metadataFileName := backup.FileName + ".metadata"
+	metadataFileName := backup.FileName + metadataSuffix
 	if err := storage.DeleteFile(ctx, c.fieldEncryptor, logger, metadataFileName); err != nil {
 		logger.WarnContext(ctx, "failed to delete backup metadata file", "error", err)
 	}

@@ -13,21 +13,24 @@ import (
 type BackupRepository struct{}
 
 func (r *BackupRepository) Save(backup *LogicalBackup) error {
+	return r.SaveInTransaction(storage.GetDb(), backup)
+}
+
+// A stored file is kept only when the row naming it commits, so publication and the
+// receipts it spends have to share one transaction.
+func (r *BackupRepository) SaveInTransaction(tx *gorm.DB, backup *LogicalBackup) error {
 	if backup.DatabaseID == uuid.Nil || backup.StorageID == uuid.Nil {
 		return errors.New("database ID and storage ID are required")
 	}
 
-	db := storage.GetDb()
-
 	isNew := backup.ID == uuid.Nil
 	if isNew {
 		backup.ID = uuid.New()
-		return db.Create(backup).
-			Error
+
+		return tx.Create(backup).Error
 	}
 
-	return db.Save(backup).
-		Error
+	return tx.Save(backup).Error
 }
 
 func (r *BackupRepository) UpdateRestoreVerificationStatus(

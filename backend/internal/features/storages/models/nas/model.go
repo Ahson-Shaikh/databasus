@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"log/slog"
 	"net"
 	"path/filepath"
@@ -235,13 +236,7 @@ func (n *NASStorage) DeleteFile(
 
 	filePath := n.getFilePath(fileName)
 
-	_, err = fs.Stat(filePath)
-	if err != nil {
-		return nil
-	}
-
-	err = fs.Remove(filePath)
-	if err != nil {
+	if err := fs.Remove(filePath); err != nil && !errors.Is(err, iofs.ErrNotExist) {
 		return fmt.Errorf("failed to delete file from NAS: %w", err)
 	}
 

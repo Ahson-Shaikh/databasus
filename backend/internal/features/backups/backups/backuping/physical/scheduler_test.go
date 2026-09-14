@@ -2,6 +2,7 @@ package backuping_physical
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
 	"databasus-backend/internal/features/intervals"
 	"databasus-backend/internal/storage"
+	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 	"databasus-backend/internal/util/walmath"
 )
@@ -815,6 +817,53 @@ func Test_RecoverInFlightOnRestart_FailsAndReleasesClaim(t *testing.T) {
 
 	claim, _ := physical_repositories.GetInFlightBackupRepository().FindByDatabaseID(prereqs.DB.ID)
 	assert.Nil(t, claim, "a backup orphaned by restart must be failed and released")
+}
+
+func Test_RecoverInFlightOnRestart_WhenFullHasNamedArtifact_LeavesArtifact(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	scheduler := CreateTestPhysicalScheduler()
+	backupID := seedInProgressFullWithClaim(t, prereqs)
+	fileName := "restart-interrupted-full-" + backupID.String()
+
+	fullBackup, err := physical_repositories.GetFullBackupRepository().FindByID(backupID)
+	require.NoError(t, err)
+	require.NotNil(t, fullBackup)
+	fullBackup.FileName = &fileName
+	require.NoError(t, physical_repositories.GetFullBackupRepository().Save(fullBackup))
+	require.NoError(t, prereqs.Storage.SaveFile(
+		t.Context(),
+		encryption.GetFieldEncryptor(),
+		logger.GetLogger(),
+		fileName,
+		strings.NewReader("partial physical backup"),
+	))
+
+	t.Cleanup(func() {
+		require.NoError(t, prereqs.Storage.DeleteFile(
+			context.Background(),
+			encryption.GetFieldEncryptor(),
+			logger.GetLogger(),
+			fileName,
+		))
+	})
+
+	require.NoError(t, scheduler.recoverInFlightBackupsOnRestart(t.Context(), logger.GetLogger()))
+
+	persistedFullBackup, err := physical_repositories.GetFullBackupRepository().FindByID(backupID)
+	require.NoError(t, err)
+	require.NotNil(t, persistedFullBackup)
+	assert.Equal(t, physical_enums.PhysicalBackupStatusError, persistedFullBackup.Status)
+	require.NotNil(t, persistedFullBackup.FileName)
+	assert.Equal(t, fileName, *persistedFullBackup.FileName)
+
+	artifactReader, err := prereqs.Storage.GetFile(
+		t.Context(),
+		encryption.GetFieldEncryptor(),
+		logger.GetLogger(),
+		fileName,
+	)
+	require.NoError(t, err)
+	require.NoError(t, artifactReader.Close())
 }
 
 func Test_ClaimAndInsert_WhenConcurrentFullAndIncrSameDatabase_OnlyOneSucceeds(t *testing.T) {

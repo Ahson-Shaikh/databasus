@@ -68,10 +68,15 @@ func SeedInProgressTestBackup(
 ) *backups_core_logical.LogicalBackup {
 	t.Helper()
 
+	backupID := uuid.New()
+
+	// The scheduler names a backup before anything writes to storage, so a seeded
+	// row without a name is a state production never reaches.
 	return seedBackup(t, "in-progress", &backups_core_logical.LogicalBackup{
-		ID:         uuid.New(),
+		ID:         backupID,
 		DatabaseID: databaseID,
 		StorageID:  storageID,
+		FileName:   "seeded-" + backupID.String(),
 		Status:     backups_core_logical.BackupStatusInProgress,
 		CreatedAt:  time.Now().UTC(),
 	})
@@ -145,11 +150,10 @@ func CreateTestBackupCleaner() *BackupCleaner {
 func CreateTestBackuper() *Backuper {
 	return &Backuper{
 		databases.GetDatabaseService(),
-		encryption.GetFieldEncryptor(),
 		workspaces_services.GetWorkspaceService(),
 		backupRepository,
 		backups_config_logical.GetBackupConfigService(),
-		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		notifiers.GetNotifierService(),
 		taskCancellationRegistry,
 		logger.GetLogger(),
@@ -160,11 +164,10 @@ func CreateTestBackuper() *Backuper {
 func CreateTestBackuperWithUseCase(useCase backups_core_logical.CreateBackupUsecase) *Backuper {
 	return &Backuper{
 		databases.GetDatabaseService(),
-		encryption.GetFieldEncryptor(),
 		workspaces_services.GetWorkspaceService(),
 		backupRepository,
 		backups_config_logical.GetBackupConfigService(),
-		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		notifiers.GetNotifierService(),
 		taskCancellationRegistry,
 		logger.GetLogger(),

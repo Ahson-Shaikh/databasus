@@ -35,11 +35,10 @@ var backupCleaner = &BackupCleaner{
 
 var backuper = &Backuper{
 	databases.GetDatabaseService(),
-	encryption.GetFieldEncryptor(),
 	workspaces_services.GetWorkspaceService(),
 	backupRepository,
 	backups_config_logical.GetBackupConfigService(),
-	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	notifiers.GetNotifierService(),
 	taskCancellationRegistry,
 	logger.GetLogger(),
