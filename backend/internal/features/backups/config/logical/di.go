@@ -34,5 +34,5 @@ func GetBackupConfigService() *BackupConfigService {
 }
 
 var SetupDependencies = sync.OnceFunc(func() {
-	storages.GetStorageService().AddStorageDatabaseCounter(backupConfigService)
+	storages.GetStorageService().AddStorageReferenceReporter(backupConfigService)
 })

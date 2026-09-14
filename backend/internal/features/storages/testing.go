@@ -23,8 +23,8 @@ func DrainStorageFileDeletions(
 	return storage_files.NewDeletionWorker(storageFileStore, dependencies).DrainForTest(ctx, references...)
 }
 
-func SetStorageDatabaseCountersForTest(counters ...StorageDatabaseCounter) {
-	storageService.storageDatabaseCounters = counters
+func SetStorageReferenceReportersForTest(reporters ...StorageReferenceReporter) {
+	storageService.storageReferenceReporters = reporters
 }
 
 func CreateTestStorage(workspaceID uuid.UUID) *Storage {

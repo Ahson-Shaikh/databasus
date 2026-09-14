@@ -215,6 +215,19 @@ func (r *PendingDeletionRepository) CountByReferences(
 	return count, nil
 }
 
+func (r *PendingDeletionRepository) FindByStorage(
+	tx *gorm.DB,
+	storageID uuid.UUID,
+) ([]PendingDeletion, error) {
+	var pending []PendingDeletion
+
+	if err := tx.Where("storage_id = ?", storageID).Order("created_at").Find(&pending).Error; err != nil {
+		return nil, fmt.Errorf("list pending deletions of a storage: %w", err)
+	}
+
+	return pending, nil
+}
+
 func (r *PendingDeletionRepository) FindByReference(
 	tx *gorm.DB,
 	reference StoredFileReference,

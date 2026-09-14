@@ -100,6 +100,43 @@ func (w *DeletionWorker) RunOnce(ctx context.Context) {
 	w.reportSummary(ctx, passLogger)
 }
 
+// DrainStorage empties one storage's obligations before the storage row, and the
+// credentials with it, disappear. It returns the names it could not remove, which
+// is what the caller has to tell the user about. The budget bounds it because it
+// runs in the request that deletes the storage.
+func (w *DeletionWorker) DrainStorage(
+	ctx context.Context,
+	storageID uuid.UUID,
+	budget time.Duration,
+) ([]string, error) {
+	pending, err := w.repository.FindByStorage(db.GetDb(), storageID)
+	if err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(budget)
+	remaining := make([]string, 0, len(pending))
+
+	for _, obligation := range pending {
+		if time.Now().After(deadline) {
+			remaining = append(remaining, obligation.FileName)
+
+			continue
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, w.timings.AttemptTimeout)
+		deleteErr := w.deleteFromProvider(attemptCtx, w.logger, obligation)
+
+		cancel()
+
+		if deleteErr != nil {
+			remaining = append(remaining, obligation.FileName)
+		}
+	}
+
+	return remaining, nil
+}
+
 func (w *DeletionWorker) claimDue() ([]PendingDeletion, error) {
 	var claimed []PendingDeletion
 

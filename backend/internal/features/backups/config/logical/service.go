@@ -3,6 +3,7 @@ package backups_config_logical
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -13,6 +14,7 @@ import (
 	"databasus-backend/internal/features/storages"
 	users_models "databasus-backend/internal/features/users/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
+	"databasus-backend/internal/storage"
 	"databasus-backend/internal/util/period"
 )
 
@@ -41,6 +43,25 @@ func (s *BackupConfigService) GetStorageAttachedDatabasesIDs(
 	}
 
 	return databasesIDs, nil
+}
+
+// GetStorageBackupReferences counts the logical backup rows still naming files in
+// this storage. Those rows are the only record of the names, so the storage cannot
+// go while they exist.
+func (s *BackupConfigService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
+	var count int64
+
+	// The table is named rather than the model imported: the backups feature imports
+	// this package, so the dependency cannot run the other way.
+	err := storage.GetDb().
+		Table("logical_backups").
+		Where("storage_id = ?", storageID).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count logical backups of a storage: %w", err)
+	}
+
+	return count, nil
 }
 
 func (s *BackupConfigService) SaveBackupConfigWithAuth(

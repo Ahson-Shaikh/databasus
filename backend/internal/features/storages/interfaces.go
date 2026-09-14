@@ -45,6 +45,11 @@ type StorageFileSaver interface {
 	EncryptSensitiveData(encryptor encryption.FieldEncryptor) error
 }
 
-type StorageDatabaseCounter interface {
+// StorageReferenceReporter answers both questions a storage has to ask before it
+// can be deleted: whether a database still points at it, and whether backup rows
+// still name files in it. Those rows are the only record of the file names, so
+// removing the storage while they exist would make the objects unreachable.
+type StorageReferenceReporter interface {
 	GetStorageAttachedDatabasesIDs(storageID uuid.UUID) ([]uuid.UUID, error)
+	GetStorageBackupReferences(storageID uuid.UUID) (int64, error)
 }
