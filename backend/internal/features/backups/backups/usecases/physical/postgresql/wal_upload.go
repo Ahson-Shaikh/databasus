@@ -21,7 +21,6 @@ import (
 	physical_models "databasus-backend/internal/features/backups/backups/core/physical/models"
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	backup_encryption "databasus-backend/internal/features/backups/backups/encryption"
-	"databasus-backend/internal/features/storages"
 	storage_files "databasus-backend/internal/features/storages/files"
 	db "databasus-backend/internal/storage"
 	util_encryption "databasus-backend/internal/util/encryption"
@@ -41,7 +40,6 @@ const walSegmentUploadTimeout = 2 * time.Minute
 type WalUploadDeps struct {
 	DatabaseID          uuid.UUID
 	StorageID           uuid.UUID
-	Storage             storages.StorageFileSaver
 	FileStore           *storage_files.Store
 	Encryption          backups_core_enums.BackupEncryption
 	MasterKey           string
@@ -405,17 +403,19 @@ func (u *WalUploader) reference(objectName string) storage_files.StoredFileRefer
 	return storage_files.StoredFileReference{StorageID: u.deps.StorageID, FileName: objectName}
 }
 
-// discardAttempt hands the attempt's artifact and sidecar back to cleanup. It runs
-// on its own connection because no catalog row survives to carry them.
+// discardAttempt hands the attempt's artifact and sidecar back to cleanup. No
+// catalog row survives to carry them, so the request gets a transaction of its own.
 func (u *WalUploader) discardAttempt(ctx context.Context, objectName string) {
 	references := []storage_files.StoredFileReference{
 		u.reference(objectName),
 		u.reference(objectName + metadataSuffix),
 	}
 
-	if err := u.deps.FileStore.RequestFileDeletions(
-		context.WithoutCancel(ctx), db.GetDb(), references,
-	); err != nil {
+	ctx = context.WithoutCancel(ctx)
+
+	if err := db.GetDb().Transaction(func(tx *gorm.DB) error {
+		return u.deps.FileStore.RequestFileDeletions(ctx, tx, references)
+	}); err != nil {
 		u.deps.Logger.Warn("failed to discard a wal segment attempt", "file_name", objectName, "error", err)
 	}
 }
@@ -490,10 +490,9 @@ func segmentBounds(walFilename string, segSizeBytes int64) (timelineID int, star
 	return int(timeline), start, start + walmath.LSN(segSizeBytes), nil
 }
 
-// walSegmentObjectName is the deterministic storage key for a WAL segment:
-// "<db>-WAL-tl<TL>-<wal_filename>.zst". No UUID — the insert-first claim model
-// guarantees a single writer per (database_id, timeline_id, wal_filename), so the
-// deterministic name is safe and dedup-friendly (matches the .history convention).
+// The attempt UUID is what keeps a retry from addressing the object a pending
+// cleanup already owns; the rest of the key stays readable for an operator
+// listing a bucket.
 func walSegmentObjectName(
 	databaseID uuid.UUID,
 	timelineID int,

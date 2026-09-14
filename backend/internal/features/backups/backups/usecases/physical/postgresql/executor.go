@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	physical_enums "databasus-backend/internal/features/backups/backups/core/physical/enums"
 	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
@@ -135,8 +136,10 @@ func streamWithCodecFallback(
 }
 
 func discardAttemptFiles(ctx context.Context, common CommonBackupSpec, fileName string) {
-	err := common.FileStore.RequestFileDeletions(ctx, db.GetDb(), []storage_files.StoredFileReference{
-		{StorageID: common.StorageID, FileName: fileName},
+	err := db.GetDb().Transaction(func(tx *gorm.DB) error {
+		return common.FileStore.RequestFileDeletions(ctx, tx, []storage_files.StoredFileReference{
+			{StorageID: common.StorageID, FileName: fileName},
+		})
 	})
 	if err != nil {
 		common.Logger.ErrorContext(ctx, "failed to discard a rejected codec attempt",

@@ -341,7 +341,9 @@ func (s *BackupsScheduler) failBackupsInProgress(ctx context.Context, logger *sl
 			&failMessage,
 		)
 
-		if err := s.backupRepository.Save(backup); err != nil {
+		// The row already names a file, and the previous run may have uploaded it,
+		// so the terminal state and the obligation commit together.
+		if err := s.backuper.saveTerminalStateAndDiscardFiles(ctx, backup); err != nil {
 			return err
 		}
 

@@ -280,7 +280,6 @@ func Test_WalStream_CustomWalSegmentSize_LsnMathCorrect(t *testing.T) {
 	uploader := NewWalUploader(WalUploadDeps{
 		DatabaseID:          fixture.DB.ID,
 		StorageID:           fixture.Storage.ID,
-		Storage:             store,
 		FileStore:           newMockWalStoreFor(store),
 		Encryption:          backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor:      encryption.GetFieldEncryptor(),
@@ -371,7 +370,6 @@ func Test_WalStream_ResumePointBelowSlotRestartLsn_RealignsAndKeepsStreaming(t *
 
 	firstRun := StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:      fixture,
-		Storage:      store,
 		FileStore:    newMockWalStoreFor(store),
 		WatchDirRoot: watchDirRoot,
 	})
@@ -413,7 +411,6 @@ func Test_WalStream_ResumePointBelowSlotRestartLsn_RealignsAndKeepsStreaming(t *
 
 	secondRun := StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:      fixture,
-		Storage:      store,
 		FileStore:    newMockWalStoreFor(store),
 		WatchDirRoot: watchDirRoot,
 	})
@@ -914,7 +911,6 @@ func Test_WalStream_WhenUploadsKeepFailing_AlertsArchiveStaleOnce(t *testing.T) 
 
 	t.Cleanup(StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:                   fixture,
-		Storage:                   store,
 		FileStore:                 newMockWalStoreFor(store),
 		WatchDirRoot:              t.TempDir(),
 		ArchiveStalenessThreshold: time.Second,

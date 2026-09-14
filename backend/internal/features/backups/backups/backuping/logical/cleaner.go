@@ -13,10 +13,8 @@ import (
 	"databasus-backend/internal/features/backups/backups/backuping/shared/gfs"
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
-	"databasus-backend/internal/features/storages"
 	storage_files "databasus-backend/internal/features/storages/files"
 	db "databasus-backend/internal/storage"
-	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/period"
 )
 
@@ -29,10 +27,8 @@ const (
 
 type BackupCleaner struct {
 	backupRepository      *backups_core_logical.BackupRepository
-	storageService        *storages.StorageService
 	fileStore             *storage_files.Store
 	backupConfigService   *backups_config_logical.BackupConfigService
-	fieldEncryptor        util_encryption.FieldEncryptor
 	logger                *slog.Logger
 	backupRemoveListeners []backups_core_logical.BackupRemoveListener
 

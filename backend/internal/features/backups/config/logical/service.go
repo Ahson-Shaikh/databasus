@@ -45,9 +45,8 @@ func (s *BackupConfigService) GetStorageAttachedDatabasesIDs(
 	return databasesIDs, nil
 }
 
-// GetStorageBackupReferences counts the logical backup rows still naming files in
-// this storage. Those rows are the only record of the names, so the storage cannot
-// go while they exist.
+// Those rows are the only record of the file names, so the storage cannot go
+// while they exist.
 func (s *BackupConfigService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
 	var count int64
 

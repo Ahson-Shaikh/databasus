@@ -17,8 +17,6 @@ func (r *PhysicalWalHistoryRepository) Insert(file *physical_models.PhysicalWalH
 	return r.InsertInTransaction(storage.GetDb(), file)
 }
 
-// InsertInTransaction lets the caller publish the history row and spend the write
-// receipts for its two files together.
 func (r *PhysicalWalHistoryRepository) InsertInTransaction(
 	tx *gorm.DB,
 	file *physical_models.PhysicalWalHistoryFile,

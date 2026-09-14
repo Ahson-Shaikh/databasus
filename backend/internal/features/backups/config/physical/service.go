@@ -53,9 +53,8 @@ func (s *BackupConfigService) GetStorageAttachedDatabasesIDs(
 	return databasesIDs, nil
 }
 
-// GetStorageBackupReferences counts every physical row still naming a file in this
-// storage. The tables are named rather than the models imported, because the
-// backups feature imports this package.
+// The tables are named rather than the models imported, because the backups
+// feature imports this package.
 func (s *BackupConfigService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
 	var total int64
 

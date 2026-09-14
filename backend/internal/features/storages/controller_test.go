@@ -1344,7 +1344,12 @@ func Test_DeleteStorage_WhenBackupsStillReferenceIt_IsRefused(t *testing.T) {
 	storage := CreateTestStorage(workspace.ID)
 
 	SetStorageReferenceReportersForTest(&countingReferenceReporter{backupReferences: 3})
-	t.Cleanup(func() { SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{}) })
+
+	t.Cleanup(func() {
+		SetStorageReferenceReportersForTest(&mockStorageReferenceReporter{})
+		RemoveTestStorage(t.Context(), storage.ID)
+		workspaces_testing.RemoveTestWorkspace(t.Context(), workspace, router)
+	})
 
 	err := GetStorageService().DeleteStorage(t.Context(), testUserModel(t, owner), storage.ID)
 
@@ -1352,7 +1357,7 @@ func Test_DeleteStorage_WhenBackupsStillReferenceIt_IsRefused(t *testing.T) {
 		"backup rows are the only record of the file names, so the storage cannot go while they exist")
 }
 
-func Test_DeleteStorage_WhenPendingCleanupRemains_ReportsWhatItLeftBehind(t *testing.T) {
+func Test_DeleteStorage_WhenCleanupIsPending_DrainsItBeforeTheCredentialsGo(t *testing.T) {
 	owner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 	router := createRouter()
 	workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Draining Storage Workspace", owner, router)
@@ -1373,6 +1378,8 @@ func Test_DeleteStorage_WhenPendingCleanupRemains_ReportsWhatItLeftBehind(t *tes
 
 	_, err = storage.GetFile(t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), fileName)
 	assert.Error(t, err, "the drain runs while the credentials still exist, so the file goes with the storage")
+
+	workspaces_testing.RemoveTestWorkspace(t.Context(), workspace, router)
 }
 
 func testUserModel(t *testing.T, signIn *users_dto.SignInResponseDTO) *users_models.User {

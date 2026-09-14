@@ -194,8 +194,6 @@ func ValidateStartLsnAgainstHistory(
 //
 // Shared by full.go (post-stream, when the FULL ran on a TL > 1) and
 // PR 4's wal_stream.go (which also observes .history arrivals).
-// HistoryUploadSpec replaces an eleven-value positional list, which no call site
-// could read without counting.
 type HistoryUploadSpec struct {
 	Conn           *pgx.Conn
 	TimelineID     int
@@ -289,9 +287,10 @@ func UploadHistoryFile(
 	if err != nil {
 		// An artifact with no sidecar cannot be restored from, so the attempt gives
 		// the artifact back rather than leaving half a history file behind.
-		if discardErr := spec.FileStore.RequestFileDeletions(
-			ctx, db.GetDb(), []storage_files.StoredFileReference{artifactReference},
-		); discardErr != nil {
+		if discardErr := db.GetDb().Transaction(func(tx *gorm.DB) error {
+			return spec.FileStore.RequestFileDeletions(
+				ctx, tx, []storage_files.StoredFileReference{artifactReference})
+		}); discardErr != nil {
 			logger.WarnContext(ctx, "failed to discard a history artifact after its sidecar failed",
 				"file_name", storageObjectName,
 				"error", discardErr)

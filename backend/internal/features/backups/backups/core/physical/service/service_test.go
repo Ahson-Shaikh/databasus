@@ -804,3 +804,39 @@ func Test_GetLastBackupTimesByDatabaseIDs_EmptyInput_ReturnsEmptyMap(t *testing.
 	assert.NotNil(t, lastBackupTimes)
 	assert.Empty(t, lastBackupTimes)
 }
+
+func Test_OnBeforeDatabaseRemove_HandsEveryPhysicalArtifactBackToCleanup(t *testing.T) {
+	prereqs := createServiceTestPrereqs(t)
+	databaseID := prereqs.database.ID
+	storageID := prereqs.storage.ID
+
+	fullModel := physical_testing.NewTestCompletedFullBackup(databaseID, storageID, 1, lsn(0), lsn(1))
+	manifestName := *fullModel.FileName + ".manifest"
+	fullModel.ManifestFileName = &manifestName
+	full := physical_testing.CreateTestFullBackup(t, fullModel)
+
+	history := physical_testing.CreateTestWalHistoryFile(t,
+		physical_testing.NewTestWalHistoryFile(databaseID, storageID, 1))
+
+	names := []string{*full.FileName, manifestName, *full.FileName + ".metadata", history.FileName}
+	for _, name := range names {
+		saveObject(t, prereqs.storage, name)
+	}
+
+	// Every physical table cascades on databases.id, so this listener is the last
+	// moment the names exist anywhere.
+	require.NoError(t,
+		physical_service.GetPhysicalBackupService().OnBeforeDatabaseRemove(t.Context(), databaseID))
+
+	references := make([]storage_files.StoredFileReference, 0, len(names))
+	for _, name := range names {
+		references = append(references,
+			storage_files.StoredFileReference{StorageID: storageID, FileName: name})
+	}
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(), references...))
+
+	for _, name := range names {
+		requireObjectAbsent(t, prereqs.storage, name)
+	}
+}

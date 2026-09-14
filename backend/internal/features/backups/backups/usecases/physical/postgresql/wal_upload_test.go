@@ -40,7 +40,6 @@ func newTestUploaderWithStore(
 	return NewWalUploader(WalUploadDeps{
 		DatabaseID:          fixture.DB.ID,
 		StorageID:           fixture.Storage.ID,
-		Storage:             store,
 		FileStore:           fileStore,
 		Encryption:          backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor:      encryption.GetFieldEncryptor(),

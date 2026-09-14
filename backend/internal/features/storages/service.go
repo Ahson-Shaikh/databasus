@@ -28,8 +28,6 @@ func (s *StorageService) AddStorageReferenceReporter(
 	s.storageReferenceReporters = append(s.storageReferenceReporters, reporter)
 }
 
-// GetStorageBackupReferences totals what every registered feature still keeps in
-// this storage.
 func (s *StorageService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
 	var total int64
 

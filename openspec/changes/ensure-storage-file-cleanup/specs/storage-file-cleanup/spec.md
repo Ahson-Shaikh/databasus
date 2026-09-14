@@ -96,8 +96,8 @@ The system SHALL commit the removal or terminal failure of catalog records toget
 #### Scenario: A database with physical backups is deleted
 
 - **WHEN** database deletion cascades FULL, INCR, WAL, history, manifest or metadata catalog rows
-- **THEN** exact deletion requests for every referenced artifact commit in the same database transaction as the database removal
-- **AND** a failure to persist any request rolls back the database removal
+- **THEN** exact deletion requests for every referenced artifact are committed before the cascade removes the rows that name them
+- **AND** a failure to persist them stops the database removal
 
 #### Scenario: Deletion is requested more than once
 

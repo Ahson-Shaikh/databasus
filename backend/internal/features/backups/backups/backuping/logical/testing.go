@@ -22,7 +22,6 @@ import (
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	"databasus-backend/internal/storage"
 	"databasus-backend/internal/util/cache"
-	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 )
 
@@ -138,10 +137,8 @@ func CreateTestRouter() *gin.Engine {
 func CreateTestBackupCleaner() *BackupCleaner {
 	return &BackupCleaner{
 		backupRepository,
-		storages.GetStorageService(),
 		storages.GetStorageFileStore(),
 		backups_config_logical.GetBackupConfigService(),
-		encryption.GetFieldEncryptor(),
 		logger.GetLogger(),
 		[]backups_core_logical.BackupRemoveListener{},
 		atomic.Bool{},

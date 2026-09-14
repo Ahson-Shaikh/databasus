@@ -119,10 +119,9 @@ func (r *PhysicalWalSegmentRepository) DeleteByID(id uuid.UUID) error {
 	return storage.GetDb().Delete(&physical_models.PhysicalWalSegment{}, "id = ?", id).Error
 }
 
-// DeleteAbandonedClaims removes insert-first WAL claim rows whose upload never
-// finished (file_name still NULL) and that have aged past the grace period. A
-// NULL file_name is proof no bytes were ever written under any name, so there
-// is no storage object to delete. Returns the number of rows removed.
+// A NULL file_name no longer proves the upload wrote nothing: the object is
+// written before the row names it. The bytes such a claim may have left are owned
+// by their own pending deletion, so this only removes the aged-out claim row.
 func (r *PhysicalWalSegmentRepository) DeleteAbandonedClaims(
 	databaseID uuid.UUID,
 	olderThan time.Time,
@@ -214,8 +213,6 @@ func (r *PhysicalWalSegmentRepository) MarkUploaded(
 	return r.MarkUploadedInTransaction(storage.GetDb(), id, fileName, compressedSizeMb, encryptionSalt, encryptionIV)
 }
 
-// MarkUploadedInTransaction lets the caller publish the segment and spend the write
-// receipts for its files in one transaction.
 func (r *PhysicalWalSegmentRepository) MarkUploadedInTransaction(
 	tx *gorm.DB,
 	id uuid.UUID,

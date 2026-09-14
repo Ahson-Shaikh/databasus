@@ -15,7 +15,7 @@ type BackgroundWrite struct {
 	Receipts chan WriteReceipt
 }
 
-// StartBackgroundFileWrite sends the receipt before the error, so a caller holding
+// The receipt is sent before the error, so a caller holding
 // the error knows the receipt is already waiting.
 func StartBackgroundWrite(
 	ctx context.Context,

@@ -229,7 +229,6 @@ func NewWalStreamSupervisor(spec WalStreamSpec) *WalStreamSupervisor {
 	uploader := NewWalUploader(WalUploadDeps{
 		DatabaseID:          spec.DatabaseID,
 		StorageID:           spec.StorageID,
-		Storage:             spec.Storage,
 		FileStore:           spec.FileStore,
 		Encryption:          spec.Encryption,
 		MasterKey:           spec.MasterKey,

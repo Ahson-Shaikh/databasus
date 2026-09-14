@@ -25,7 +25,6 @@ func createSupervisorWithStagedSegment(
 		DatabaseID:     fixture.DB.ID,
 		SourceDB:       fixture.DB.PostgresqlPhysical,
 		StorageID:      fixture.Storage.ID,
-		Storage:        store,
 		FileStore:      newMockWalStoreFor(store),
 		Encryption:     backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor: encryption.GetFieldEncryptor(),

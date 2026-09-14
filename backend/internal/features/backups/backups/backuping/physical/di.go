@@ -125,6 +125,10 @@ var SetupDependencies = sync.OnceFunc(func() {
 	// can drop the (now detaching) WAL slot instead of refusing it as active and
 	// leaving it to pin WAL forever.
 	databases.GetDatabaseService().AddDbRemoveListener(physicalBackupCancellationListener)
+	// Registered before the cancellation listener's siblings finish, but ordering
+	// does not matter: the cascade that would take the names away runs only after
+	// every listener has returned.
+	databases.GetDatabaseService().AddDbRemoveListener(physical_service.GetPhysicalBackupService())
 	databases.GetDatabaseService().AddDbRemoveListener(physicalSlotCleanupListener)
 	backups_config_physical.GetBackupConfigService().SetBackupCancellationListener(physicalBackupCancellationListener)
 })

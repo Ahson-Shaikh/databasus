@@ -658,6 +658,7 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 			DatabaseID: full.DatabaseID,
 			StorageID:  full.StorageID,
 			FileName:   valueOrEmpty(full.FileName),
+			Manifest:   valueOrEmpty(full.ManifestFileName),
 		})
 	}
 
@@ -680,6 +681,7 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 			DatabaseID: incremental.DatabaseID,
 			StorageID:  incremental.StorageID,
 			FileName:   valueOrEmpty(incremental.FileName),
+			Manifest:   valueOrEmpty(incremental.ManifestFileName),
 		})
 	}
 
@@ -708,6 +710,7 @@ func (s *PhysicalBackupsScheduler) describeOrphan(
 
 		spec.StorageID = row.StorageID
 		spec.FileName = valueOrEmpty(row.FileName)
+		spec.Manifest = valueOrEmpty(row.ManifestFileName)
 
 		return spec
 	}
@@ -721,6 +724,7 @@ func (s *PhysicalBackupsScheduler) describeOrphan(
 
 	spec.StorageID = row.StorageID
 	spec.FileName = valueOrEmpty(row.FileName)
+	spec.Manifest = valueOrEmpty(row.ManifestFileName)
 
 	return spec
 }
@@ -734,6 +738,7 @@ type orphanedBackupSpec struct {
 	DatabaseID uuid.UUID
 	StorageID  uuid.UUID
 	FileName   string
+	Manifest   string
 }
 
 func (s *PhysicalBackupsScheduler) failOrphanedBackup(
@@ -801,6 +806,11 @@ func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
 			references := []storage_files.StoredFileReference{
 				{StorageID: spec.StorageID, FileName: spec.FileName},
 				{StorageID: spec.StorageID, FileName: spec.FileName + metadataSuffix},
+			}
+
+			if spec.Manifest != "" {
+				references = append(references,
+					storage_files.StoredFileReference{StorageID: spec.StorageID, FileName: spec.Manifest})
 			}
 
 			if err := s.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {
