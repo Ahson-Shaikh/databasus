@@ -75,4 +75,4 @@
 - [x] 11.1 Run focused logical, physical, WAL, cleaner, storage lifecycle and provider cleanup tests, including the MinIO integration suite, and confirm no test depends on timing sleeps instead of controllable worker passes.
 - [x] 11.2 Run `make lint` and the repository backend test command (`make test` in the dev container or `make test-fedora` on supported Fedora), then resolve every failure without weakening security or cleanup assertions. 62 of 63 packages pass; `internal/features/tests/logical/mariadb` fails on a clean tree too, on a container this environment cannot bring up healthily, so it is not this change's regression.
 - [x] 11.3 Run `openspec validate ensure-storage-file-cleanup --strict` and resolve every validation error.
-- [ ] 11.4 Request the mandatory final reviewer audit against the root and backend agent rules, resolve every `CHANGES REQUIRED` finding and rerun the affected linters and tests.
+- [x] 11.4 Request the mandatory final reviewer audit against the root and backend agent rules, resolve every `CHANGES REQUIRED` finding and rerun the affected linters and tests.

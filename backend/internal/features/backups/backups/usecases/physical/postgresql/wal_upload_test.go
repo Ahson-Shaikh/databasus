@@ -373,7 +373,7 @@ func Test_WalUpload_RecoverSegment_WhenAlreadyCommitted_DropsLocalNoReupload(t *
 
 	name := walName(1, 29)
 
-	// A normal upload commits the segment (crash happened after MarkUploaded).
+	// A normal upload commits the segment (the crash landed after the commit).
 	dir1 := t.TempDir()
 	require.NoError(t, uploader.ProcessSegment(context.Background(), writeWalFile(t, dir1, name), name))
 

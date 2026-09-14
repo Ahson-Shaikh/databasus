@@ -84,7 +84,7 @@ func (c *BackupCleaner) DeleteBackup(ctx context.Context, backup *backups_core_l
 	}
 
 	// The row and the obligation to remove its files commit together, so an
-	// unreachable storage no longer decides whether the row may go, and a rolled
+	// unreachable storage does not decide whether the row may go, and a rolled
 	// back removal leaves the files where the row still names them.
 	return db.GetDb().Transaction(func(tx *gorm.DB) error {
 		if err := c.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {
