@@ -32,6 +32,7 @@ var physicalBackuper = &PhysicalBackuper{
 	physical_repositories.GetWalHistoryRepository(),
 	backups_config_physical.GetBackupConfigService(),
 	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	notifiers.GetNotifierService(),
 	tasks_cancellation.GetRegistry(),
 	encryption_secrets.GetSecretKeyService(),
@@ -49,6 +50,7 @@ var physicalBackupsScheduler = &PhysicalBackupsScheduler{
 	backups_config_physical.GetBackupConfigService(),
 	chain_view.GetChainViewService(),
 	tasks_cancellation.GetRequester(),
+	storages.GetStorageFileStore(),
 	physicalBackuper,
 	atomicTime{},
 	logger.GetLogger(),
@@ -74,6 +76,7 @@ var physicalWalStreamSupervisor = &PhysicalWalStreamSupervisor{
 	databases.GetDatabaseService(),
 	backups_config_physical.GetBackupConfigService(),
 	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	physical_repositories.GetWalSegmentRepository(),
 	physical_repositories.GetWalHistoryRepository(),
 	physical_repositories.GetWalStreamerRepository(),
@@ -122,6 +125,10 @@ var SetupDependencies = sync.OnceFunc(func() {
 	// can drop the (now detaching) WAL slot instead of refusing it as active and
 	// leaving it to pin WAL forever.
 	databases.GetDatabaseService().AddDbRemoveListener(physicalBackupCancellationListener)
+	// The cascade that would take the object names away runs only after every
+	// listener has returned.
+	databases.GetDatabaseService().AddDbRemoveListener(physical_service.GetPhysicalBackupService())
+	storages.GetStorageService().AddStorageBackupCounter(physical_service.GetPhysicalBackupService())
 	databases.GetDatabaseService().AddDbRemoveListener(physicalSlotCleanupListener)
 	backups_config_physical.GetBackupConfigService().SetBackupCancellationListener(physicalBackupCancellationListener)
 })

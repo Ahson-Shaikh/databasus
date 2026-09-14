@@ -2,6 +2,7 @@ package backups_core_logical
 
 import (
 	"context"
+	"io"
 
 	"github.com/google/uuid"
 
@@ -9,7 +10,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
 	notifier_models "databasus-backend/internal/features/notifiers/models"
-	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 )
 
 type NotificationSender interface {
@@ -20,15 +21,26 @@ type NotificationSender interface {
 	)
 }
 
+// BackupFileStore is the only way a backup writes to storage. It hands back a
+// receipt instead of a stored file, because the file belongs to nobody until the
+// transaction that publishes the backup claims it.
+type BackupFileStore interface {
+	WriteFile(
+		ctx context.Context,
+		reference storage_files.StoredFileReference,
+		file io.Reader,
+	) (storage_files.WriteReceipt, error)
+}
+
 type CreateBackupUsecase interface {
 	Execute(
 		ctx context.Context,
 		backup *LogicalBackup,
 		backupConfig *backups_config_logical.LogicalBackupConfig,
 		database *databases.Database,
-		storage *storages.Storage,
+		fileStore BackupFileStore,
 		backupProgressListener func(completedMBs float64),
-	) (*BackupMetadata, error)
+	) (*BackupArtifacts, error)
 }
 
 type BackupRemoveListener interface {

@@ -31,6 +31,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	postgresql_logical "databasus-backend/internal/features/databases/databases/postgresql/logical"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	local_storage "databasus-backend/internal/features/storages/models/local"
 	task_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	users_dto "databasus-backend/internal/features/users/dto"
@@ -1686,6 +1687,13 @@ func Test_DeleteBackup_RemovesBackupAndMetadataFilesFromDisk(t *testing.T) {
 		"Bearer "+owner.Token,
 		http.StatusNoContent,
 	)
+
+	// Deleting a backup commits the obligation to remove its files; the worker
+	// carries it out, so the test drives it before asserting the disk is clean.
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName},
+		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName + ".metadata"},
+	))
 
 	_, err = os.Stat(backupFilePath)
 	assert.True(t, os.IsNotExist(err), "backup file should be removed from disk after deletion")

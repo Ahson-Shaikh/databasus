@@ -13,6 +13,7 @@ For project-wide engineering philosophy, naming, and lint/format commands, see t
 - [Controllers](#controllers)
 - [Dependency injection (DI)](#dependency-injection-di)
 - [Background services](#background-services)
+- [Stored files](#stored-files)
 - [Migrations](#migrations)
 - [Testing](#testing)
 - [Time handling](#time-handling)
@@ -234,6 +235,38 @@ func (s *BackgroundService) Run(ctx context.Context) {
 ```
 
 `atomic.Bool.Swap(true)` does the check-and-set atomically — no `sync.Once` needed. Applies to schedulers, registries, worker nodes, and cleanup services.
+
+---
+
+## Stored files
+
+Backup code never calls a storage provider's `SaveFile` or `DeleteFile`. Everything
+goes through `storage_files.Store`, and a test under `internal/features/backups`
+fails if a direct call comes back.
+
+**A stored file is kept only when a committed transaction claims it.** `WriteFile`
+records a pending deletion before the first byte leaves and hands back a receipt.
+The transaction that publishes the backup spends that receipt with
+`ConfirmFileWrites`; every other outcome, including a provider error, a crash, a
+rolled back publication and a cancellation, leaves the obligation standing, and the
+background worker removes the file. A terminal failure path calls
+`RequestFileDeletions` in the same transaction that records the failure, so the
+file is handed back at once rather than waiting out the commit window.
+
+Two rules follow from that:
+
+- **Every write attempt gets its own object name.** A retry that reused a name
+  would address the object a pending cleanup already owns. Logical backups get this
+  from the backup UUID; physical FULL and INCR mint one per codec attempt, and WAL
+  and history carry an attempt UUID of their own.
+- **A provider's `DeleteFile` owes every representation it derives from the name**:
+  chunk objects and manifests, incomplete multipart uploads, staged blocks,
+  temporary and partial files. Only a confirmed absence counts as success. It puts
+  its own deadline on the call and must stay under `Timings.AttemptLease`, or the
+  worker reclaims the row while the attempt is still running.
+
+A test that asserts a file is gone drives the worker first, through
+`storages.DrainStorageFileDeletions`. Nothing observes cleanup by sleeping.
 
 ---
 

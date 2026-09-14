@@ -280,7 +280,7 @@ func Test_WalStream_CustomWalSegmentSize_LsnMathCorrect(t *testing.T) {
 	uploader := NewWalUploader(WalUploadDeps{
 		DatabaseID:          fixture.DB.ID,
 		StorageID:           fixture.Storage.ID,
-		Storage:             store,
+		FileStore:           newMockWalStoreFor(store),
 		Encryption:          backups_core_enums.BackupEncryptionNone,
 		FieldEncryptor:      encryption.GetFieldEncryptor(),
 		WalSegmentRepo:      physical_repositories.GetWalSegmentRepository(),
@@ -370,7 +370,7 @@ func Test_WalStream_ResumePointBelowSlotRestartLsn_RealignsAndKeepsStreaming(t *
 
 	firstRun := StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:      fixture,
-		Storage:      store,
+		FileStore:    newMockWalStoreFor(store),
 		WatchDirRoot: watchDirRoot,
 	})
 
@@ -411,7 +411,7 @@ func Test_WalStream_ResumePointBelowSlotRestartLsn_RealignsAndKeepsStreaming(t *
 
 	secondRun := StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:      fixture,
-		Storage:      store,
+		FileStore:    newMockWalStoreFor(store),
 		WatchDirRoot: watchDirRoot,
 	})
 	t.Cleanup(secondRun.Stop)
@@ -441,7 +441,7 @@ func Test_WalStream_ResumePointBelowSlotRestartLsn_RealignsAndKeepsStreaming(t *
 
 	for _, staleSegment := range queuedBeforeRebuild {
 		require.Eventually(t, func() bool {
-			return store.hasObject(walSegmentObjectName(fixture.DB.ID, 1, staleSegment))
+			return store.hasObjectFor(fixture.DB.ID, 1, staleSegment)
 		}, 60*time.Second, 250*time.Millisecond,
 			"a segment moved out of the resume path must still reach storage: %s", staleSegment)
 	}
@@ -911,7 +911,7 @@ func Test_WalStream_WhenUploadsKeepFailing_AlertsArchiveStaleOnce(t *testing.T) 
 
 	t.Cleanup(StartWalStreamerForTest(t, WalStreamerTestSpec{
 		Fixture:                   fixture,
-		Storage:                   store,
+		FileStore:                 newMockWalStoreFor(store),
 		WatchDirRoot:              t.TempDir(),
 		ArchiveStalenessThreshold: time.Second,
 		OnChainAtRisk: func(report ChainRiskReport) {

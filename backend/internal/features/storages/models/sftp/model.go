@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"strings"
@@ -194,13 +195,7 @@ func (s *SFTPStorage) DeleteFile(
 
 	filePath := s.getFilePath(fileName)
 
-	_, err = client.Stat(filePath)
-	if err != nil {
-		return nil
-	}
-
-	err = client.Remove(filePath)
-	if err != nil {
+	if err := client.Remove(filePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to delete file from SFTP: %w", err)
 	}
 

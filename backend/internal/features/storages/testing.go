@@ -5,13 +5,30 @@ import (
 
 	"github.com/google/uuid"
 
+	storage_files "databasus-backend/internal/features/storages/files"
 	local_storage "databasus-backend/internal/features/storages/models/local"
 	s3_storage "databasus-backend/internal/features/storages/models/s3"
 	"databasus-backend/internal/util/encryption"
 )
 
+// A test can assert absence right after the operation that caused it instead of
+// waiting on the production ticker.
+func DrainStorageFileDeletions(
+	ctx context.Context,
+	references ...storage_files.StoredFileReference,
+) error {
+	dependencies := storageFileDependencies
+	dependencies.Timings = storage_files.TimingsForTest()
+
+	return storage_files.NewDeletionWorker(storageFileStore, dependencies).DrainForTest(ctx, references...)
+}
+
 func SetStorageDatabaseCountersForTest(counters ...StorageDatabaseCounter) {
 	storageService.storageDatabaseCounters = counters
+}
+
+func SetStorageBackupCountersForTest(counters ...StorageBackupCounter) {
+	storageService.storageBackupCounters = counters
 }
 
 func CreateTestStorage(workspaceID uuid.UUID) *Storage {

@@ -2,12 +2,17 @@ package backuping_logical
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"databasus-backend/internal/config"
 	backups_core_enums "databasus-backend/internal/features/backups/backups/core/enums"
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
@@ -15,9 +20,11 @@ import (
 	"databasus-backend/internal/features/intervals"
 	"databasus-backend/internal/features/notifiers"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
+	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 	"databasus-backend/internal/util/period"
 )
@@ -603,4 +610,44 @@ func createTestInterval() intervals.Interval {
 		Type:      intervals.IntervalDaily,
 		TimeOfDay: &timeOfDay,
 	}
+}
+
+func Test_DeleteBackup_WhenProviderRefusesThenRecovers_RowGoesFirstAndFileFollows(t *testing.T) {
+	fixture := CreateBackupTestFixture(t, "Flaky Cleanup Workspace")
+	backup := SeedInProgressTestBackup(t, fixture.Database.ID, fixture.Storage.ID)
+
+	directory := "refusing-" + backup.ID.String()
+	backup.FileName = directory + "/artifact"
+	backup.Status = backups_core_logical.BackupStatusCompleted
+	require.NoError(t, backupRepository.Save(backup))
+
+	require.NoError(t, fixture.Storage.SaveFile(
+		t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(),
+		backup.FileName, strings.NewReader("stored artifact"),
+	))
+
+	absoluteDirectory := filepath.Join(config.GetEnv().DataFolder, directory)
+	require.NoError(t, os.Chmod(absoluteDirectory, 0o500))
+
+	t.Cleanup(func() {
+		_ = os.Chmod(absoluteDirectory, 0o755)
+		_ = os.RemoveAll(absoluteDirectory)
+	})
+
+	require.NoError(t, GetBackupCleaner().DeleteBackup(t.Context(), backup))
+
+	persisted, err := backupRepository.FindByID(backup.ID)
+	require.Error(t, err, "the catalog row must not wait for a provider that is refusing")
+	assert.Nil(t, persisted)
+
+	reference := storage_files.StoredFileReference{StorageID: fixture.Storage.ID, FileName: backup.FileName}
+
+	require.Error(t, storages.DrainStorageFileDeletions(t.Context(), reference),
+		"a refused deletion must stay an obligation")
+	assert.FileExists(t, filepath.Join(config.GetEnv().DataFolder, backup.FileName))
+
+	require.NoError(t, os.Chmod(absoluteDirectory, 0o755))
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(), reference))
+	assert.NoFileExists(t, filepath.Join(config.GetEnv().DataFolder, backup.FileName))
 }

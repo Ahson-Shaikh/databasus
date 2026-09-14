@@ -94,6 +94,12 @@ func redactAttr(attr slog.Attr) slog.Attr {
 	return attr
 }
 
+// The entry point for callers that persist a provider error outside a log record,
+// where the sink's redaction never runs but the same rules still have to hold.
+func Redact(message string) string {
+	return redactMessage(message)
+}
+
 // Credentials and addresses reach the message through fmt.Sprintf at call sites - audit messages
 // in particular embed raw user emails, and those messages are now exported off-box.
 // The strings.Contains guards keep three regex scans off the hot path: this runs on every record,

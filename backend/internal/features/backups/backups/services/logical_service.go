@@ -81,6 +81,12 @@ func (s *LogicalBackupService) OnBeforeBackupsStorageChange(ctx context.Context,
 	return nil
 }
 
+// The logical_backups rows are the only record of the file names in a storage, so
+// the storage cannot go while they exist.
+func (s *LogicalBackupService) GetStorageBackupReferenceCount(storageID uuid.UUID) (int64, error) {
+	return s.backupRepository.CountByStorageID(storageID)
+}
+
 func (s *LogicalBackupService) OnBeforeDatabaseRemove(ctx context.Context, databaseID uuid.UUID) error {
 	err := s.deleteDbBackups(ctx, databaseID)
 	if err != nil {

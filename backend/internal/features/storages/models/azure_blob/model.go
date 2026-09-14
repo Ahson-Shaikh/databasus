@@ -248,6 +248,10 @@ func (s *AzureBlobStorage) DeleteFile(
 	deleteCtx, cancel := context.WithTimeout(context.Background(), azureDeleteTimeout)
 	defer cancel()
 
+	if err := s.discardUncommittedBlocks(deleteCtx, client, blobName); err != nil {
+		return err
+	}
+
 	_, err = client.DeleteBlob(
 		deleteCtx,
 		s.ContainerName,
@@ -255,10 +259,10 @@ func (s *AzureBlobStorage) DeleteFile(
 		nil,
 	)
 	if err != nil {
-		var respErr *azcore.ResponseError
-		if errors.As(err, &respErr) && respErr.StatusCode == 404 {
+		if isAzureNotFound(err) {
 			return nil
 		}
+
 		return fmt.Errorf("failed to delete blob from Azure: %w", err)
 	}
 
@@ -305,12 +309,10 @@ func (s *AzureBlobStorage) TestConnection(encryptor encryption.FieldEncryptor) e
 	containerClient := client.ServiceClient().NewContainerClient(s.ContainerName)
 	_, err = containerClient.GetProperties(ctx, nil)
 	if err != nil {
-		var respErr *azcore.ResponseError
-		if errors.As(err, &respErr) {
-			if respErr.StatusCode == 404 {
-				return fmt.Errorf("container '%s' does not exist", s.ContainerName)
-			}
+		if isAzureNotFound(err) {
+			return fmt.Errorf("container '%s' does not exist", s.ContainerName)
 		}
+
 		if errors.Is(err, context.DeadlineExceeded) {
 			return errors.New("failed to connect to Azure Blob Storage. Please check params")
 		}
@@ -385,6 +387,59 @@ func (s *AzureBlobStorage) Update(incoming *AzureBlobStorage) {
 	if incoming.AccountKey != "" {
 		s.AccountKey = incoming.AccountKey
 	}
+}
+
+// An interrupted upload leaves staged blocks that no blob points at, and Azure
+// keeps billing for them for a week. There is no API that drops them, so cleanup
+// commits an empty list, which turns them into a zero-length blob the delete then
+// removes. Existence is the guard rather than the committed block list, because a
+// blob written with a single Put Blob has no committed blocks and committing an
+// empty list over it would truncate real content.
+//
+// This assumes Azure answers Get Block List for a blob that was never committed.
+// Nothing here can detect it if Azure ever answers 404 instead.
+func (s *AzureBlobStorage) discardUncommittedBlocks(
+	ctx context.Context,
+	client *azblob.Client,
+	blobName string,
+) error {
+	containerClient := client.ServiceClient().NewContainerClient(s.ContainerName)
+
+	_, err := containerClient.NewBlobClient(blobName).GetProperties(ctx, nil)
+	if err == nil {
+		return nil
+	}
+
+	if !isAzureNotFound(err) {
+		return fmt.Errorf("failed to inspect azure blob: %w", err)
+	}
+
+	blockBlobClient := containerClient.NewBlockBlobClient(blobName)
+
+	blocks, err := blockBlobClient.GetBlockList(ctx, blockblob.BlockListTypeAll, nil)
+	if err != nil {
+		if isAzureNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("failed to list azure blocks: %w", err)
+	}
+
+	if len(blocks.UncommittedBlocks) == 0 {
+		return nil
+	}
+
+	if _, err := blockBlobClient.CommitBlockList(ctx, nil, nil); err != nil {
+		return fmt.Errorf("failed to discard uncommitted azure blocks: %w", err)
+	}
+
+	return nil
+}
+
+func isAzureNotFound(err error) bool {
+	var responseError *azcore.ResponseError
+
+	return errors.As(err, &responseError) && responseError.StatusCode == http.StatusNotFound
 }
 
 func (s *AzureBlobStorage) buildBlobName(fileName string) string {

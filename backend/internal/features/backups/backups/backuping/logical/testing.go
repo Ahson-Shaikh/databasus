@@ -22,7 +22,6 @@ import (
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	"databasus-backend/internal/storage"
 	"databasus-backend/internal/util/cache"
-	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 )
 
@@ -68,10 +67,15 @@ func SeedInProgressTestBackup(
 ) *backups_core_logical.LogicalBackup {
 	t.Helper()
 
+	backupID := uuid.New()
+
+	// The scheduler names a backup before anything writes to storage, so a seeded
+	// row without a name is a state production never reaches.
 	return seedBackup(t, "in-progress", &backups_core_logical.LogicalBackup{
-		ID:         uuid.New(),
+		ID:         backupID,
 		DatabaseID: databaseID,
 		StorageID:  storageID,
+		FileName:   "seeded-" + backupID.String(),
 		Status:     backups_core_logical.BackupStatusInProgress,
 		CreatedAt:  time.Now().UTC(),
 	})
@@ -133,9 +137,8 @@ func CreateTestRouter() *gin.Engine {
 func CreateTestBackupCleaner() *BackupCleaner {
 	return &BackupCleaner{
 		backupRepository,
-		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		backups_config_logical.GetBackupConfigService(),
-		encryption.GetFieldEncryptor(),
 		logger.GetLogger(),
 		[]backups_core_logical.BackupRemoveListener{},
 		atomic.Bool{},
@@ -145,11 +148,10 @@ func CreateTestBackupCleaner() *BackupCleaner {
 func CreateTestBackuper() *Backuper {
 	return &Backuper{
 		databases.GetDatabaseService(),
-		encryption.GetFieldEncryptor(),
 		workspaces_services.GetWorkspaceService(),
 		backupRepository,
 		backups_config_logical.GetBackupConfigService(),
-		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		notifiers.GetNotifierService(),
 		taskCancellationRegistry,
 		logger.GetLogger(),
@@ -160,11 +162,10 @@ func CreateTestBackuper() *Backuper {
 func CreateTestBackuperWithUseCase(useCase backups_core_logical.CreateBackupUsecase) *Backuper {
 	return &Backuper{
 		databases.GetDatabaseService(),
-		encryption.GetFieldEncryptor(),
 		workspaces_services.GetWorkspaceService(),
 		backupRepository,
 		backups_config_logical.GetBackupConfigService(),
-		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		notifiers.GetNotifierService(),
 		taskCancellationRegistry,
 		logger.GetLogger(),

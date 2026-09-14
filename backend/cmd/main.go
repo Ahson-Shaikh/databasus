@@ -376,6 +376,10 @@ func runBackgroundTasks(log *slog.Logger) {
 		backuping_physical.GetPhysicalWalStreamSupervisor().Run(ctx)
 	})
 
+	go runWithPanicLogging(log, "storage file deletion background service", func() {
+		storages.GetStorageFileDeletionWorker().Run(ctx)
+	})
+
 	go runWithPanicLogging(log, "telemetry background service", func() {
 		telemetry.GetTelemetryBackgroundService().Run(ctx)
 	})

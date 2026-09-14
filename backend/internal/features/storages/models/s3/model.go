@@ -53,6 +53,8 @@ const (
 	defaultMaxPartsPerObject = 1000
 
 	manifestSuffix  = ".parts"
+	partSuffix      = ".part"
+	partIndexDigits = 6
 	manifestVersion = 1
 
 	s3ErrCodeNoSuchBucket = "NoSuchBucket"
@@ -252,6 +254,9 @@ func (s *S3Storage) GetFile(
 	}), nil
 }
 
+// Chunks are found by listing rather than only through the manifest, because a
+// write can complete numbered objects before it publishes one. The multipart abort
+// matters too: an interrupted upload keeps consuming storage until it is aborted.
 func (s *S3Storage) DeleteFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
@@ -270,45 +275,30 @@ func (s *S3Storage) DeleteFile(
 	deleteCtx, cancel := context.WithTimeout(context.Background(), s3DeleteTimeout)
 	defer cancel()
 
-	manifest, hasManifest, err := s.readManifest(deleteCtx, client, baseKey)
+	keys, err := s.derivedObjectKeys(deleteCtx, client, baseKey)
 	if err != nil {
+		logger.WarnContext(ctx, "failed to discover s3 objects to delete",
+			"file_name", fileName, "object_key", baseKey, "error", err)
+
 		return err
 	}
 
-	if hasManifest {
-		keys := make([]string, 0, len(manifest.Parts)+1)
-		for _, part := range manifest.Parts {
-			keys = append(keys, part.Key)
-		}
-		keys = append(keys, manifestObjectKey(baseKey))
-
-		if err := s.removeObjects(deleteCtx, client, keys); err != nil {
-			logger.WarnContext(ctx, "failed to delete chunked file from s3",
-				"file_name", fileName, "object_key", baseKey, "error", err)
-
-			return fmt.Errorf("failed to delete chunked backup from S3: %w", err)
-		}
-
-		logger.DebugContext(ctx, fmt.Sprintf("deleted chunked file from s3 (%d parts)", len(manifest.Parts)),
-			"file_name", fileName, "object_key", baseKey)
-
-		return nil
-	}
-
-	err = client.RemoveObject(
-		deleteCtx,
-		s.S3Bucket,
-		baseKey,
-		minio.RemoveObjectOptions{},
-	)
-	if err != nil {
+	if err := s.removeObjects(deleteCtx, client, keys); err != nil {
 		logger.WarnContext(ctx, "failed to delete file from s3",
 			"file_name", fileName, "object_key", baseKey, "error", err)
 
 		return fmt.Errorf("failed to delete file from S3: %w", err)
 	}
 
-	logger.DebugContext(ctx, "deleted file from s3", "file_name", fileName, "object_key", baseKey)
+	if err := s.abortDerivedMultipartUploads(deleteCtx, encryptor, client, baseKey); err != nil {
+		logger.WarnContext(ctx, "failed to abort incomplete s3 uploads",
+			"file_name", fileName, "object_key", baseKey, "error", err)
+
+		return err
+	}
+
+	logger.DebugContext(ctx, fmt.Sprintf("deleted file from s3 (%d objects)", len(keys)),
+		"file_name", fileName, "object_key", baseKey)
 
 	return nil
 }
@@ -395,6 +385,85 @@ func (s *S3Storage) Update(incoming *S3Storage) {
 
 	// we do not allow to change the prefix after creation,
 	// otherwise we will have to transfer all the data to the new prefix
+}
+
+// Listing matches the exact derived grammar, so deleting "backup-1" cannot reach
+// "backup-10". The manifest key is removed unconditionally, so no caller may name a
+// sidecar "<base>.parts".
+func (s *S3Storage) derivedObjectKeys(
+	ctx context.Context,
+	client *minio.Client,
+	baseKey string,
+) ([]string, error) {
+	keys := []string{baseKey, manifestObjectKey(baseKey)}
+
+	manifest, hasManifest, err := s.readManifest(ctx, client, baseKey)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{keys[0]: {}, keys[1]: {}}
+
+	if hasManifest {
+		for _, part := range manifest.Parts {
+			if _, duplicate := seen[part.Key]; duplicate {
+				continue
+			}
+
+			seen[part.Key] = struct{}{}
+			keys = append(keys, part.Key)
+		}
+	}
+
+	for object := range client.ListObjects(ctx, s.S3Bucket, minio.ListObjectsOptions{
+		Prefix:    baseKey + partSuffix,
+		Recursive: true,
+	}) {
+		if object.Err != nil {
+			return nil, fmt.Errorf("failed to list chunk objects: %w", object.Err)
+		}
+
+		if !isPartObjectKey(baseKey, object.Key) {
+			continue
+		}
+
+		if _, duplicate := seen[object.Key]; duplicate {
+			continue
+		}
+
+		seen[object.Key] = struct{}{}
+		keys = append(keys, object.Key)
+	}
+
+	return keys, nil
+}
+
+func (s *S3Storage) abortDerivedMultipartUploads(
+	ctx context.Context,
+	encryptor encryption.FieldEncryptor,
+	client *minio.Client,
+	baseKey string,
+) error {
+	coreClient, err := s.getCoreClient(encryptor)
+	if err != nil {
+		return err
+	}
+
+	for upload := range client.ListIncompleteUploads(ctx, s.S3Bucket, baseKey, true) {
+		if upload.Err != nil {
+			return fmt.Errorf("failed to list incomplete uploads: %w", upload.Err)
+		}
+
+		if upload.Key != baseKey && !isPartObjectKey(baseKey, upload.Key) {
+			continue
+		}
+
+		if err := coreClient.AbortMultipartUpload(ctx, s.S3Bucket, upload.Key, upload.UploadID); err != nil {
+			return fmt.Errorf("failed to abort incomplete upload for %s: %w", upload.Key, err)
+		}
+	}
+
+	return nil
 }
 
 func (s *S3Storage) writeConnectionProbe(
@@ -830,7 +899,22 @@ type objectSpan struct {
 }
 
 func partObjectKey(baseKey string, objectIndex int) string {
-	return fmt.Sprintf("%s.part%06d", baseKey, objectIndex)
+	return fmt.Sprintf("%s%s%0*d", baseKey, partSuffix, partIndexDigits, objectIndex)
+}
+
+func isPartObjectKey(baseKey, candidate string) bool {
+	index, found := strings.CutPrefix(candidate, baseKey+partSuffix)
+	if !found || len(index) != partIndexDigits {
+		return false
+	}
+
+	for _, digit := range index {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 func manifestObjectKey(baseKey string) string {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	physical_models "databasus-backend/internal/features/backups/backups/core/physical/models"
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	"databasus-backend/internal/storage"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/walmath"
@@ -46,6 +46,7 @@ type PhysicalBackupService struct {
 	fullBackupRepository *physical_repositories.PhysicalFullBackupRepository
 	walSegmentRepository *physical_repositories.PhysicalWalSegmentRepository
 	storageService       *storages.StorageService
+	fileStore            *storage_files.Store
 	fieldEncryptor       util_encryption.FieldEncryptor
 	logger               *slog.Logger
 }
@@ -866,13 +867,8 @@ func (s *PhysicalBackupService) deleteWalInSpanBudgeted(
 
 		for _, segment := range segments {
 			if segment.FileName != nil {
-				if delErr := s.deleteWalObjectFailClosed(ctx, segment.StorageID, *segment.FileName); delErr != nil {
-					return deletedRows, deletedMB, false, delErr
-				}
-
-				if delErr := s.deleteWalObjectFailClosed(ctx,
-					segment.StorageID,
-					*segment.FileName+metadataSuffix,
+				if delErr := s.requestFileDeletions(ctx, tx, segment.StorageID,
+					*segment.FileName, *segment.FileName+metadataSuffix,
 				); delErr != nil {
 					return deletedRows, deletedMB, false, delErr
 				}
@@ -930,13 +926,13 @@ func (s *PhysicalBackupService) deleteIncrementalSet(
 
 	for _, incremental := range ordered {
 		if incremental.FileName != nil {
-			s.deleteStorageObjectFailOpen(ctx, incremental.StorageID, *incremental.FileName+metadataSuffix)
-
-			if incremental.ManifestFileName != nil {
-				s.deleteStorageObjectFailOpen(ctx, incremental.StorageID, *incremental.ManifestFileName)
+			if err := s.requestFileDeletions(ctx, tx, incremental.StorageID,
+				*incremental.FileName,
+				*incremental.FileName+metadataSuffix,
+				valueOrEmptyString(incremental.ManifestFileName),
+			); err != nil {
+				return deleted, deletedMB, err
 			}
-
-			s.deleteStorageObjectFailOpen(ctx, incremental.StorageID, *incremental.FileName)
 		}
 
 		if err := tx.Delete(&physical_models.PhysicalIncrementalBackup{}, "id = ?", incremental.ID).Error; err != nil {
@@ -1022,8 +1018,11 @@ func (s *PhysicalBackupService) deleteOrphanedHistoryFiles(
 	deleted := 0
 
 	for _, historyFile := range historyFiles {
-		s.deleteStorageObjectFailOpen(ctx, historyFile.StorageID, historyFile.FileName+metadataSuffix)
-		s.deleteStorageObjectFailOpen(ctx, historyFile.StorageID, historyFile.FileName)
+		if err := s.requestFileDeletions(ctx, tx, historyFile.StorageID,
+			historyFile.FileName, historyFile.FileName+metadataSuffix,
+		); err != nil {
+			return deleted, err
+		}
 
 		if err := tx.Delete(&physical_models.PhysicalWalHistoryFile{}, "id = ?", historyFile.ID).Error; err != nil {
 			return deleted, err
@@ -1041,58 +1040,36 @@ func (s *PhysicalBackupService) deleteFullArtifactAndRow(
 	full *physical_models.PhysicalFullBackup,
 ) error {
 	if full.FileName != nil {
-		s.deleteStorageObjectFailOpen(ctx, full.StorageID, *full.FileName+metadataSuffix)
-
-		if full.ManifestFileName != nil {
-			s.deleteStorageObjectFailOpen(ctx, full.StorageID, *full.ManifestFileName)
+		if err := s.requestFileDeletions(ctx, tx, full.StorageID,
+			*full.FileName,
+			*full.FileName+metadataSuffix,
+			valueOrEmptyString(full.ManifestFileName),
+		); err != nil {
+			return err
 		}
-
-		s.deleteStorageObjectFailOpen(ctx, full.StorageID, *full.FileName)
 	}
 
 	return tx.Delete(&physical_models.PhysicalFullBackup{}, "id = ?", full.ID).Error
 }
 
-// deleteStorageObjectFailOpen deletes one object, logging and continuing on any
-// failure. Used for FULL / INCR / history objects: a transient storage error
-// must not block the row delete. storage.DeleteFile is idempotent on not-found.
-func (s *PhysicalBackupService) deleteStorageObjectFailOpen(ctx context.Context, storageID uuid.UUID, fileName string) {
-	backupStorage, err := s.storageService.GetStorageByID(ctx, storageID)
-	if err != nil {
-		s.logger.Error("failed to resolve storage for object delete",
-			"storage_id", storageID, "file_name", fileName, "error", err)
-
-		return
-	}
-
-	if err := backupStorage.DeleteFile(ctx, s.fieldEncryptor, s.logger, fileName); err != nil {
-		s.logger.ErrorContext(ctx, "failed to delete storage object", "file_name", fileName, "error", err)
-	}
-}
-
-// deleteWalObjectFailClosed deletes one WAL object fail-closed: a transient
-// DeleteFile error is returned so the caller rolls back the batch and retries,
-// never orphaning a WAL object with no catalog row. A permanently-removed
-// storage (the storage row itself is gone) is fail-open — the object is
-// unreachable forever, so the row may be deleted.
-func (s *PhysicalBackupService) deleteWalObjectFailClosed(
+// requestFileDeletions records the obligation to remove these files in the same
+// transaction that removes the rows naming them. Nothing reaches the provider
+// here, so a rolled back cascade leaves every object intact and a storage outage
+// does not decide whether a catalog row may go.
+func (s *PhysicalBackupService) requestFileDeletions(
 	ctx context.Context,
+	tx *gorm.DB,
 	storageID uuid.UUID,
-	fileName string,
+	fileNames ...string,
 ) error {
-	backupStorage, err := s.storageService.GetStorageByID(ctx, storageID)
-	if err != nil {
-		s.logger.Warn("storage not found for WAL object delete; removing row anyway",
-			"storage_id", storageID, "file_name", fileName, "error", err)
+	references := make([]storage_files.StoredFileReference, 0, len(fileNames))
 
-		return nil
+	for _, fileName := range fileNames {
+		references = append(references,
+			storage_files.StoredFileReference{StorageID: storageID, FileName: fileName})
 	}
 
-	if err := backupStorage.DeleteFile(ctx, s.fieldEncryptor, s.logger, fileName); err != nil {
-		return fmt.Errorf("delete WAL object %s: %w", fileName, err)
-	}
-
-	return nil
+	return s.fileStore.RequestFileDeletions(ctx, tx, references)
 }
 
 // reverseTopoOrderIncrementals orders incrementals leaves-first: an INCR is
@@ -1149,4 +1126,12 @@ func reverseTopoOrderIncrementals(
 	}
 
 	return ordered
+}
+
+func valueOrEmptyString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }

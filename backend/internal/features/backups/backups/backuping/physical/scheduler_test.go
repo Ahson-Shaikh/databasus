@@ -2,6 +2,7 @@ package backuping_physical
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +18,10 @@ import (
 	backups_config_physical "databasus-backend/internal/features/backups/config/physical"
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
 	"databasus-backend/internal/features/intervals"
+	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	"databasus-backend/internal/storage"
+	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 	"databasus-backend/internal/util/walmath"
 )
@@ -817,6 +821,47 @@ func Test_RecoverInFlightOnRestart_FailsAndReleasesClaim(t *testing.T) {
 	assert.Nil(t, claim, "a backup orphaned by restart must be failed and released")
 }
 
+func Test_RecoverInFlightOnRestart_WhenFullHasNamedArtifact_ArtifactRemoved(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	scheduler := CreateTestPhysicalScheduler()
+	backupID := seedInProgressFullWithClaim(t, prereqs)
+	fileName := "restart-interrupted-full-" + backupID.String()
+
+	fullBackup, err := physical_repositories.GetFullBackupRepository().FindByID(backupID)
+	require.NoError(t, err)
+	require.NotNil(t, fullBackup)
+	fullBackup.FileName = &fileName
+	require.NoError(t, physical_repositories.GetFullBackupRepository().Save(fullBackup))
+	require.NoError(t, prereqs.Storage.SaveFile(
+		t.Context(),
+		encryption.GetFieldEncryptor(),
+		logger.GetLogger(),
+		fileName,
+		strings.NewReader("partial physical backup"),
+	))
+
+	require.NoError(t, scheduler.recoverInFlightBackupsOnRestart(t.Context(), logger.GetLogger()))
+
+	persistedFullBackup, err := physical_repositories.GetFullBackupRepository().FindByID(backupID)
+	require.NoError(t, err)
+	require.NotNil(t, persistedFullBackup)
+	assert.Equal(t, physical_enums.PhysicalBackupStatusError, persistedFullBackup.Status)
+	require.NotNil(t, persistedFullBackup.FileName)
+	assert.Equal(t, fileName, *persistedFullBackup.FileName)
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+	))
+
+	_, err = prereqs.Storage.GetFile(
+		t.Context(),
+		encryption.GetFieldEncryptor(),
+		logger.GetLogger(),
+		fileName,
+	)
+	assert.Error(t, err, "a backup interrupted by a restart must not leave its artifact behind")
+}
+
 func Test_ClaimAndInsert_WhenConcurrentFullAndIncrSameDatabase_OnlyOneSucceeds(t *testing.T) {
 	prereqs := seedBackupPrereqs(t)
 	// The INCR claimer needs a real chain root to satisfy the FK; the FULL claimer
@@ -900,17 +945,19 @@ func Test_FailBackupAndReleaseClaim_WhenFullRolledBack_LeavesNoNamedArtifact(t *
 	scheduler := CreateTestPhysicalScheduler()
 	backupID := seedInProgressFullWithClaim(t, prereqs)
 
-	require.NoError(t, scheduler.failBackupAndReleaseClaim(
-		physical_enums.PhysicalBackupTypeFull, backupID, prereqs.DB.ID,
-		physical_enums.PhysicalBackupErrorApplicationRestart, "restart interrupted backup"))
+	require.NoError(t, scheduler.failBackupAndReleaseClaim(t.Context(), orphanedBackupSpec{
+		Kind:       physical_enums.PhysicalBackupTypeFull,
+		BackupID:   backupID,
+		DatabaseID: prereqs.DB.ID,
+		StorageID:  prereqs.Storage.ID,
+	}, physical_enums.PhysicalBackupErrorApplicationRestart, "restart interrupted backup"))
 
 	full, _ := physical_repositories.GetFullBackupRepository().FindByID(backupID)
 	require.NotNil(t, full)
 	assert.Equal(t, physical_enums.PhysicalBackupStatusError, full.Status)
 	require.NotNil(t, full.FailMessage)
 	assert.Equal(t, "restart interrupted backup", *full.FailMessage)
-	assert.Nil(t, full.FileName,
-		"a rolled-back FULL carries no file_name — the invariant that makes skipping storage cleanup safe")
+	assert.Nil(t, full.FileName, "a FULL rolled back before its first attempt never named a file")
 
 	claim, _ := physical_repositories.GetInFlightBackupRepository().FindByDatabaseID(prereqs.DB.ID)
 	assert.Nil(t, claim, "the in-flight claim must be released in the same tx as the status flip")

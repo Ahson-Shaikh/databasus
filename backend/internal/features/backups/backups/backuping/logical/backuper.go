@@ -12,26 +12,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	notifier_models "databasus-backend/internal/features/notifiers/models"
-	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	tasks_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
-	util_encryption "databasus-backend/internal/util/encryption"
+	db "databasus-backend/internal/storage"
 )
 
-const partialBackupCleanupTimeout = 30 * time.Second
+const (
+	metadataWriteTimeout = 30 * time.Second
+
+	metadataSuffix = ".metadata"
+)
 
 type Backuper struct {
 	databaseService          *databases.DatabaseService
-	fieldEncryptor           util_encryption.FieldEncryptor
 	workspaceService         *workspaces_services.WorkspaceService
 	backupRepository         *backups_core_logical.BackupRepository
 	backupConfigService      *backups_config_logical.BackupConfigService
-	storageService           *storages.StorageService
+	fileStore                *storage_files.Store
 	notificationSender       backups_core_logical.NotificationSender
 	taskCancellationRegistry *tasks_cancellation.Registry
 	logger                   *slog.Logger
@@ -70,12 +74,6 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 	b.taskCancellationRegistry.RegisterTask(backup.ID, cancel)
 	defer b.taskCancellationRegistry.UnregisterTask(backup.ID)
 
-	storage, err := b.storageService.GetStorageByID(executionCtx, *backupConfig.StorageID)
-	if err != nil {
-		logger.ErrorContext(ctx, "failed to get storage by ID", "error", err)
-		return
-	}
-
 	start := time.Now().UTC()
 
 	backupProgressListener := func(
@@ -89,12 +87,12 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 		}
 	}
 
-	backupMetadata, err := b.createBackupUseCase.Execute(
+	artifacts, err := b.createBackupUseCase.Execute(
 		executionCtx,
 		backup,
 		backupConfig,
 		database,
-		storage,
+		b.fileStore,
 		backupProgressListener,
 	)
 	if err != nil {
@@ -128,8 +126,7 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 			"backup_id", backup.ID,
 			"database_id", databaseID,
 			"database_type", database.Type,
-			"storage_id", storage.ID,
-			"storage_type", storage.Type,
+			"storage_id", backup.StorageID,
 			"error", err,
 		)
 
@@ -150,31 +147,8 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 			backup.BackupDurationMs = time.Since(start).Milliseconds()
 			backup.BackupSizeMb = 0
 
-			if err := b.backupRepository.Save(backup); err != nil {
+			if err := b.saveTerminalStateAndDiscardFiles(ctx, backup); err != nil {
 				logger.ErrorContext(ctx, "failed to save cancelled backup", "error", err)
-			}
-
-			// This branch is reached because executionCtx was cancelled, so the cleanup needs a live
-			// context of its own or the partial file is never deleted.
-			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), partialBackupCleanupTimeout)
-			defer cancelCleanup()
-
-			partialBackupStorage, storageErr := b.storageService.GetStorageByID(cleanupCtx, backup.StorageID)
-			if storageErr == nil {
-				if deleteErr := partialBackupStorage.DeleteFile(
-					cleanupCtx,
-					b.fieldEncryptor,
-					logger,
-					backup.FileName,
-				); deleteErr != nil {
-					logger.ErrorContext(ctx,
-						"failed to delete partial backup file",
-						"backup_id",
-						backup.ID,
-						"error",
-						deleteErr,
-					)
-				}
 			}
 
 			return
@@ -193,7 +167,7 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 			)
 		}
 
-		if err := b.backupRepository.Save(backup); err != nil {
+		if err := b.saveTerminalStateAndDiscardFiles(ctx, backup); err != nil {
 			logger.ErrorContext(ctx, "failed to save backup", "error", err)
 		}
 
@@ -212,55 +186,36 @@ func (b *Backuper) MakeBackup(ctx context.Context, backupID uuid.UUID, isCallNot
 
 	backup.BackupDurationMs = time.Since(start).Milliseconds()
 
-	// Update backup with encryption metadata if provided
-	if backupMetadata != nil {
-		backupMetadata.BackupID = backup.ID
+	receipts := artifacts.Receipts
 
-		if err := backupMetadata.Validate(); err != nil {
-			logger.ErrorContext(ctx, "failed to validate backup metadata", "error", err)
+	if artifacts.Metadata != nil {
+		artifacts.Metadata.BackupID = backup.ID
+
+		if err := artifacts.Metadata.Validate(); err != nil {
+			b.failBackup(ctx, logger, backup, backupConfig, fmt.Errorf("validate backup metadata: %w", err))
+
 			return
 		}
 
-		backup.EncryptionSalt = backupMetadata.EncryptionSalt
-		backup.EncryptionIV = backupMetadata.EncryptionIV
-		backup.Encryption = backupMetadata.Encryption
-	}
+		backup.EncryptionSalt = artifacts.Metadata.EncryptionSalt
+		backup.EncryptionIV = artifacts.Metadata.EncryptionIV
+		backup.Encryption = artifacts.Metadata.Encryption
 
-	if backupMetadata != nil {
-		metadataJSON, err := json.Marshal(backupMetadata)
+		metadataReceipt, err := b.writeMetadataFile(backup, artifacts.Metadata)
 		if err != nil {
-			logger.ErrorContext(ctx, "failed to marshal backup metadata to JSON",
-				"backup_id", backup.ID,
-				"error", err,
-			)
-		} else {
-			metadataReader := bytes.NewReader(metadataJSON)
-			metadataFileName := backup.FileName + ".metadata"
+			b.failBackup(ctx, logger, backup, backupConfig, err)
 
-			// Not executionCtx: the dump itself already succeeded, and a cancel landing here would
-			// leave a completed backup whose encryption metadata is missing, making it unrestorable.
-			if err := storage.SaveFile(
-				context.Background(),
-				b.fieldEncryptor,
-				logger,
-				metadataFileName,
-				metadataReader,
-			); err != nil {
-				logger.ErrorContext(ctx, "failed to save backup metadata file to storage",
-					"backup_id", backup.ID,
-					"file_name", metadataFileName,
-					"error", err,
-				)
-			} else {
-				logger.DebugContext(ctx, "backup metadata file saved", "file_name", metadataFileName)
-			}
+			return
 		}
+
+		receipts = append(receipts, metadataReceipt)
 	}
 
 	backup.Status = backups_core_logical.BackupStatusCompleted
 
-	if err := b.backupRepository.Save(backup); err != nil {
-		logger.ErrorContext(ctx, "failed to save backup", "error", err)
+	if err := b.publishBackup(ctx, backup, receipts); err != nil {
+		b.failBackup(ctx, logger, backup, backupConfig, err)
+
 		return
 	}
 
@@ -377,4 +332,99 @@ func (b *Backuper) SendBackupNotification(
 			},
 		)
 	}
+}
+
+// The sidecar carries its own context because the dump already succeeded: a caller
+// cancelling here would otherwise fail a backup whose expensive part is done.
+func (b *Backuper) writeMetadataFile(
+	backup *backups_core_logical.LogicalBackup,
+	metadata *backups_core_logical.BackupMetadata,
+) (storage_files.WriteReceipt, error) {
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return storage_files.WriteReceipt{}, fmt.Errorf("marshal backup metadata: %w", err)
+	}
+
+	writeCtx, cancel := context.WithTimeout(context.Background(), metadataWriteTimeout)
+	defer cancel()
+
+	receipt, err := b.fileStore.WriteFile(
+		writeCtx,
+		storage_files.StoredFileReference{
+			StorageID: backup.StorageID,
+			FileName:  backup.FileName + metadataSuffix,
+		},
+		bytes.NewReader(metadataJSON),
+	)
+	if err != nil {
+		return storage_files.WriteReceipt{}, fmt.Errorf("save backup metadata file: %w", err)
+	}
+
+	return receipt, nil
+}
+
+// Every file the receipts name is kept only if the row marking the backup completed
+// commits with them.
+func (b *Backuper) publishBackup(
+	ctx context.Context,
+	backup *backups_core_logical.LogicalBackup,
+	receipts []storage_files.WriteReceipt,
+) error {
+	return db.GetDb().Transaction(func(tx *gorm.DB) error {
+		if err := b.fileStore.ConfirmFileWrites(ctx, tx, receipts); err != nil {
+			return err
+		}
+
+		return b.backupRepository.SaveInTransaction(tx, backup)
+	})
+}
+
+// Per-attempt naming makes the two names exact, so nothing else can be writing
+// them while this runs.
+func (b *Backuper) saveTerminalStateAndDiscardFiles(
+	ctx context.Context,
+	backup *backups_core_logical.LogicalBackup,
+) error {
+	references := []storage_files.StoredFileReference{
+		{StorageID: backup.StorageID, FileName: backup.FileName},
+		{StorageID: backup.StorageID, FileName: backup.FileName + metadataSuffix},
+	}
+
+	// MakeBackup runs on a context detached from the caller, but a terminal state has
+	// to be recorded even when that context is the one that was cancelled.
+	ctx = context.WithoutCancel(ctx)
+
+	return db.GetDb().Transaction(func(tx *gorm.DB) error {
+		if err := b.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {
+			return err
+		}
+
+		return b.backupRepository.SaveInTransaction(tx, backup)
+	})
+}
+
+func (b *Backuper) failBackup(
+	ctx context.Context,
+	logger *slog.Logger,
+	backup *backups_core_logical.LogicalBackup,
+	backupConfig *backups_config_logical.LogicalBackupConfig,
+	cause error,
+) {
+	message := cause.Error()
+
+	backup.Status = backups_core_logical.BackupStatusFailed
+	backup.FailMessage = &message
+	backup.BackupSizeMb = 0
+
+	logger.ErrorContext(ctx, "logical backup failed after the dump", "error", cause)
+
+	if err := b.databaseService.SetBackupError(backup.DatabaseID, message); err != nil {
+		logger.ErrorContext(ctx, "failed to record the backup error on the database", "error", err)
+	}
+
+	if err := b.saveTerminalStateAndDiscardFiles(ctx, backup); err != nil {
+		logger.ErrorContext(ctx, "failed to save failed backup", "error", err)
+	}
+
+	b.SendBackupNotification(ctx, backupConfig, backup, backups_config_logical.NotificationBackupFailed, &message)
 }
