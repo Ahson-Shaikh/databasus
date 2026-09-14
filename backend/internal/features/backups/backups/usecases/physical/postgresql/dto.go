@@ -13,6 +13,7 @@ import (
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	util_encryption "databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/walmath"
 )
@@ -20,10 +21,13 @@ import (
 type timelineIdentityProbe func(context.Context, int) (*TimelineDecision, error)
 
 type CommonBackupSpec struct {
-	SourceDB       *postgresql_physical.PostgresqlPhysicalDatabase
-	DatabaseName   string
-	StorageID      uuid.UUID
+	SourceDB     *postgresql_physical.PostgresqlPhysicalDatabase
+	DatabaseName string
+	StorageID    uuid.UUID
+	// Storage stays for the reads this package still does, the parent manifest
+	// fetch among them. Everything it writes goes through FileStore.
 	Storage        storages.StorageFileSaver
+	FileStore      storage_files.FileStore
 	Encryption     backups_core_enums.BackupEncryption
 	MasterKey      string
 	FieldEncryptor util_encryption.FieldEncryptor
@@ -60,6 +64,10 @@ type PhysicalBackupResult struct {
 	Status       physical_enums.PhysicalBackupStatus
 	ErrorReason  *physical_enums.PhysicalBackupErrorReason
 	ErrorMessage string
+
+	// Receipts are spent by the transaction that publishes the backup. A result
+	// that carries none leaves every file the attempt wrote for cleanup.
+	Receipts []storage_files.WriteReceipt
 
 	FileName string
 

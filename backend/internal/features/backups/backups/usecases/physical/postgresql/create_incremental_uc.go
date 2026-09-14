@@ -73,28 +73,34 @@ func (uc *CreateIncrementalBackupUsecase) Execute(
 	}
 	defer manifestCleanup()
 
-	fileName := buildObjectName(spec.DatabaseName, spec.Backup.ID, start, "INCR")
+	label := buildBackupLabel(spec.DatabaseName, spec.Backup.ID, start, "INCR")
 
-	spec.Backup.FileName = &fileName
+	// Every codec attempt gets its own object key, and the row has to carry it
+	// before the bytes leave, or a failed attempt leaves a file nothing names.
+	mintAndSaveAttemptName := func() (string, error) {
+		attemptName := buildObjectName(label, uuid.New())
 
-	if err := spec.IncrRepo.Save(spec.Backup); err != nil {
-		return errorResult(physical_enums.PhysicalBackupErrorStorageUploadFailed,
-			"persist file_name at upload-start", err), nil
+		spec.Backup.FileName = &attemptName
+		if err := spec.IncrRepo.Save(spec.Backup); err != nil {
+			return "", fmt.Errorf("persist file_name at upload-start: %w", err)
+		}
+
+		return attemptName, nil
 	}
 
 	var result PhysicalBackupResult
 
 	slotErr := WithBackupSlot(ctx, spec.SourceDB, spec.FieldEncryptor, spec.Logger, func() error {
-		streamResult, err := streamWithCodecFallback(
-			ctx,
-			spec.CommonBackupSpec,
-			spec.Backup.ID,
-			creds,
-			fileName,
-			systemID,
-			manifestPath,
-			classifyIncrStreamError,
-		)
+		streamResult, err := streamWithCodecFallback(ctx, streamAttemptSpec{
+			Common:                  spec.CommonBackupSpec,
+			BackupID:                spec.Backup.ID,
+			Creds:                   creds,
+			Label:                   label,
+			SystemID:                systemID,
+			IncrementalManifestPath: manifestPath,
+			Classify:                classifyIncrStreamError,
+			MintAndSaveAttemptName:  mintAndSaveAttemptName,
+		})
 		if err != nil {
 			result = errorResult(physical_enums.PhysicalBackupErrorPgBasebackupFailed,
 				"pg_basebackup --incremental stream", err)
@@ -113,15 +119,16 @@ func (uc *CreateIncrementalBackupUsecase) Execute(
 
 		streamResult.BackupDurationMs = time.Since(start).Milliseconds()
 		streamResult.CompletedAt = time.Now().UTC()
-		streamResult.FileName = fileName
 
-		if err := uploadIncrMetadata(
-			spec.Logger, spec.FieldEncryptor, spec.Storage, spec.SourceDB, spec.Backup, streamResult,
-		); err != nil {
+		metadataReceipt, err := uploadIncrMetadata(
+			spec.Logger, spec.FileStore, spec.StorageID, spec.SourceDB, spec.Backup, streamResult,
+		)
+		if err != nil {
 			result = errorResult(physical_enums.PhysicalBackupErrorStorageUploadFailed, "upload metadata", err)
 			return nil
 		}
 
+		streamResult.Receipts = append(streamResult.Receipts, metadataReceipt)
 		result = streamResult
 
 		return nil

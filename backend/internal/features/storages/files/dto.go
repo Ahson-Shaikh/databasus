@@ -50,6 +50,12 @@ type WriteReceipt struct {
 	Generation        int
 }
 
+// FileStore is what a caller needs to write one file and get a receipt for it.
+// Store satisfies it, and so does any narrower seam a feature declares.
+type FileStore interface {
+	WriteFile(ctx context.Context, reference StoredFileReference, file io.Reader) (WriteReceipt, error)
+}
+
 type FileWriter interface {
 	SaveFile(
 		ctx context.Context,

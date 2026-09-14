@@ -22,6 +22,7 @@ import (
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
 	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	tasks_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/storage"
@@ -41,6 +42,7 @@ type PhysicalBackuper struct {
 	historyRepo              *physical_repositories.PhysicalWalHistoryRepository
 	backupConfigService      *backups_config_physical.BackupConfigService
 	storageService           *storages.StorageService
+	fileStore                *storage_files.Store
 	notificationSender       NotificationSender
 	taskCancellationRegistry *tasks_cancellation.Registry
 	secretKeyService         *encryption_secrets.SecretKeyService
@@ -108,6 +110,7 @@ func (b *PhysicalBackuper) runFullBackup(
 			DatabaseName:   backupCtx.Database.Name,
 			StorageID:      backupCtx.Storage.ID,
 			Storage:        backupCtx.Storage,
+			FileStore:      b.fileStore,
 			Encryption:     backupCtx.Config.Encryption,
 			MasterKey:      backupCtx.MasterKey,
 			FieldEncryptor: b.fieldEncryptor,
@@ -202,6 +205,7 @@ func (b *PhysicalBackuper) runIncrementalBackup(
 			DatabaseName:   backupCtx.Database.Name,
 			StorageID:      backupCtx.Storage.ID,
 			Storage:        backupCtx.Storage,
+			FileStore:      b.fileStore,
 			Encryption:     backupCtx.Config.Encryption,
 			MasterKey:      backupCtx.MasterKey,
 			FieldEncryptor: b.fieldEncryptor,

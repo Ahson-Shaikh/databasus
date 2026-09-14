@@ -44,6 +44,7 @@ func CreateTestPhysicalBackuper(notificationSender NotificationSender) *Physical
 		physical_repositories.GetWalHistoryRepository(),
 		backups_config_physical.GetBackupConfigService(),
 		storages.GetStorageService(),
+		storages.GetStorageFileStore(),
 		sender,
 		tasks_cancellation.GetRegistry(),
 		encryption_secrets.GetSecretKeyService(),

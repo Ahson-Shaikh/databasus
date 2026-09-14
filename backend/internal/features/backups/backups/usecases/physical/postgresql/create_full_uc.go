@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	chain_view "databasus-backend/internal/features/backups/backups/core/physical/chain_view"
 	physical_enums "databasus-backend/internal/features/backups/backups/core/physical/enums"
 	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
@@ -37,27 +39,33 @@ func (uc *CreateFullBackupUsecase) Execute(ctx context.Context, spec FullBackupS
 		return refusalResult, nil
 	}
 
-	fileName := buildObjectName(spec.DatabaseName, spec.Backup.ID, start, "FULL")
+	label := buildBackupLabel(spec.DatabaseName, spec.Backup.ID, start, "FULL")
 
-	spec.Backup.FileName = &fileName
-	if err := spec.FullRepo.Save(spec.Backup); err != nil {
-		return errorResult(physical_enums.PhysicalBackupErrorStorageUploadFailed,
-			"persist file_name at upload-start", err), nil
+	// Every codec attempt gets its own object key, and the row has to carry it
+	// before the bytes leave, or a failed attempt leaves a file nothing names.
+	mintAndSaveAttemptName := func() (string, error) {
+		attemptName := buildObjectName(label, uuid.New())
+
+		spec.Backup.FileName = &attemptName
+		if err := spec.FullRepo.Save(spec.Backup); err != nil {
+			return "", fmt.Errorf("persist file_name at upload-start: %w", err)
+		}
+
+		return attemptName, nil
 	}
-
 	var result PhysicalBackupResult
 
 	slotErr := WithBackupSlot(ctx, spec.SourceDB, spec.FieldEncryptor, spec.Logger, func() error {
-		streamResult, err := streamWithCodecFallback(
-			ctx,
-			spec.CommonBackupSpec,
-			spec.Backup.ID,
-			creds,
-			fileName,
-			spec.SourceDB.SystemIdentifierUint64(),
-			"",
-			classifyFullStreamError,
-		)
+		streamResult, err := streamWithCodecFallback(ctx, streamAttemptSpec{
+			Common:                  spec.CommonBackupSpec,
+			BackupID:                spec.Backup.ID,
+			Creds:                   creds,
+			Label:                   label,
+			SystemID:                spec.SourceDB.SystemIdentifierUint64(),
+			IncrementalManifestPath: "",
+			Classify:                classifyFullStreamError,
+			MintAndSaveAttemptName:  mintAndSaveAttemptName,
+		})
 		if err != nil {
 			result = errorResult(physical_enums.PhysicalBackupErrorPgBasebackupFailed,
 				"pg_basebackup stream", err)
@@ -81,7 +89,8 @@ func (uc *CreateFullBackupUsecase) Execute(ctx context.Context, spec FullBackupS
 		}
 
 		if validation.Status == chain_view.ValidationStatusChainBroken {
-			removeUploadedArtifactsAfterChainBroken(spec.Storage, spec.FieldEncryptor, fileName, spec.Logger)
+			removeUploadedArtifactsAfterChainBroken(
+				spec.Storage, spec.FieldEncryptor, streamResult.FileName, spec.Logger)
 
 			reason := physical_enums.PhysicalBackupErrorStartLsnOutsideTimeline
 
@@ -89,7 +98,7 @@ func (uc *CreateFullBackupUsecase) Execute(ctx context.Context, spec FullBackupS
 				Status:       physical_enums.PhysicalBackupStatusChainBroken,
 				ErrorReason:  &reason,
 				ErrorMessage: validation.Message,
-				FileName:     fileName,
+				FileName:     streamResult.FileName,
 				TimelineID:   streamResult.TimelineID,
 				StartLSN:     streamResult.StartLSN,
 				StopLSN:      streamResult.StopLSN,
@@ -110,15 +119,16 @@ func (uc *CreateFullBackupUsecase) Execute(ctx context.Context, spec FullBackupS
 
 		streamResult.BackupDurationMs = time.Since(start).Milliseconds()
 		streamResult.CompletedAt = time.Now().UTC()
-		streamResult.FileName = fileName
 
-		if err := uploadFullMetadata(
-			spec.Logger, spec.FieldEncryptor, spec.Storage, spec.SourceDB, spec.Backup, streamResult,
-		); err != nil {
+		metadataReceipt, err := uploadFullMetadata(
+			spec.Logger, spec.FileStore, spec.StorageID, spec.SourceDB, spec.Backup, streamResult,
+		)
+		if err != nil {
 			result = errorResult(physical_enums.PhysicalBackupErrorStorageUploadFailed, "upload metadata", err)
 			return nil
 		}
 
+		streamResult.Receipts = append(streamResult.Receipts, metadataReceipt)
 		result = streamResult
 
 		return nil

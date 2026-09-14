@@ -32,6 +32,7 @@ var physicalBackuper = &PhysicalBackuper{
 	physical_repositories.GetWalHistoryRepository(),
 	backups_config_physical.GetBackupConfigService(),
 	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	notifiers.GetNotifierService(),
 	tasks_cancellation.GetRegistry(),
 	encryption_secrets.GetSecretKeyService(),

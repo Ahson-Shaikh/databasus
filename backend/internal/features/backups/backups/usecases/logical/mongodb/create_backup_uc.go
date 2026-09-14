@@ -192,7 +192,7 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 		return nil, err
 	}
 
-	fileWrite := backups_core_logical.StartBackgroundFileWrite(
+	fileWrite := storage_files.StartBackgroundWrite(
 		ctx,
 		fileStore,
 		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName},

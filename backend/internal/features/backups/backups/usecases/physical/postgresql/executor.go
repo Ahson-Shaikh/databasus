@@ -24,7 +24,8 @@ func (s CommonBackupSpec) runStreamParams(
 	codec physical_enums.PhysicalBackupCompression,
 ) runStreamParams {
 	return runStreamParams{
-		Storage:          s.Storage,
+		FileStore:        s.FileStore,
+		StorageID:        s.StorageID,
 		FieldEncryptor:   s.FieldEncryptor,
 		Logger:           s.Logger,
 		FileName:         fileName,
@@ -37,48 +38,67 @@ func (s CommonBackupSpec) runStreamParams(
 	}
 }
 
-// streamWithCodecFallback owns the ZSTD -> GZIP -> NONE codec-fallback loop and
-// the final mapping of the settled streamOutcome to a PhysicalBackupResult,
-// shared by FULL and INCR. It runs INSIDE the per-backup replication slot (the
-// caller invokes it from Execute's WithBackupSlot callback), so the slot is held
-// across every attempt; only the --compress flag and the recorded codec differ
-// between attempts, and every attempt streams to the same object key (a rejected
-// attempt wrote 0 bytes, and SaveFile is overwrite-PUT).
+// The ZSTD -> GZIP -> NONE fallback runs INSIDE the per-backup replication slot,
+// so the slot is held across every attempt; only the --compress flag, the recorded
+// codec and the object key differ between them. A rejected attempt leaves an object
+// of its own for cleanup rather than being overwritten.
 //
-// incrementalManifestPath is "" for a FULL; a non-empty path is the downloaded
+// IncrementalManifestPath is "" for a FULL; a non-empty path is the downloaded
 // parent-manifest temp file that makes this an INCR (--incremental=<path>).
+// streamAttemptSpec carries what one backup needs to stream, so the codec loop
+// does not grow a positional list every time the caller learns something new.
+type streamAttemptSpec struct {
+	Common                  CommonBackupSpec
+	BackupID                uuid.UUID
+	Creds                   *postgresql_shared.CredentialTempFiles
+	Label                   string
+	SystemID                uint64
+	IncrementalManifestPath string
+	Classify                streamErrorClassifier
+
+	// MintAndSaveAttemptName produces the object key for the next attempt and
+	// persists it on the backup row. The loop owns neither the naming inputs nor
+	// the repository, and the two effects cannot be separated: a name the row does
+	// not carry is a name nothing can clean up.
+	MintAndSaveAttemptName func() (string, error)
+}
+
 func streamWithCodecFallback(
 	ctx context.Context,
-	common CommonBackupSpec,
-	backupID uuid.UUID,
-	creds *postgresql_shared.CredentialTempFiles,
-	fileName string,
-	systemID uint64,
-	incrementalManifestPath string,
-	classify streamErrorClassifier,
+	spec streamAttemptSpec,
 ) (PhysicalBackupResult, error) {
-	pgBin := tools.GetPostgresqlExecutable(common.SourceDB.Version, tools.PostgresqlExecutablePgBasebackup)
+	pgBin := tools.GetPostgresqlExecutable(spec.Common.SourceDB.Version, tools.PostgresqlExecutablePgBasebackup)
 
-	var settled streamOutcome
+	var (
+		settled         streamOutcome
+		settledFileName string
+	)
 
 	for i, codec := range codecFallbackOrder {
+		fileName, err := spec.MintAndSaveAttemptName()
+		if err != nil {
+			return PhysicalBackupResult{}, err
+		}
+
+		settledFileName = fileName
+
 		buildCmd := func(streamCtx context.Context) (*exec.Cmd, error) {
 			return newPgBasebackupCommand(
 				streamCtx,
 				pgBin,
-				common.SourceDB,
-				creds,
-				fileName,
+				spec.Common.SourceDB,
+				spec.Creds,
+				spec.Label,
 				codec,
-				incrementalManifestPath,
+				spec.IncrementalManifestPath,
 			)
 		}
 
 		outcome, err := runStream(
 			ctx,
-			common.runStreamParams(fileName, backupID, systemID, codec),
+			spec.Common.runStreamParams(fileName, spec.BackupID, spec.SystemID, codec),
 			buildCmd,
-			classify,
+			spec.Classify,
 		)
 		if err != nil {
 			return PhysicalBackupResult{}, err
@@ -86,9 +106,9 @@ func streamWithCodecFallback(
 
 		if outcome.isCompressionUnsupported {
 			if i+1 < len(codecFallbackOrder) {
-				common.Logger.Warn(
+				spec.Common.Logger.Warn(
 					fmt.Sprintf("compression downgraded: %s -> %s", codec, codecFallbackOrder[i+1]),
-					"backup_id", backupID)
+					"backup_id", spec.BackupID)
 
 				continue
 			}
@@ -103,7 +123,7 @@ func streamWithCodecFallback(
 		break
 	}
 
-	return resultFromOutcome(settled, fileName), nil
+	return resultFromOutcome(settled, settledFileName), nil
 }
 
 func resultFromOutcome(outcome streamOutcome, fileName string) PhysicalBackupResult {
@@ -111,6 +131,7 @@ func resultFromOutcome(outcome streamOutcome, fileName string) PhysicalBackupRes
 		Status:                 outcome.Status,
 		ErrorReason:            outcome.ErrorReason,
 		ErrorMessage:           outcome.ErrorMessage,
+		Receipts:               outcome.Receipts,
 		FileName:               fileName,
 		TimelineID:             outcome.TimelineID,
 		StartLSN:               outcome.StartLSN,
@@ -144,12 +165,11 @@ func errorResult(
 	}
 }
 
-// buildObjectName is the storage object key for a backup artifact:
-// "<dbName>-<kind>-<timestamp>-<backupID>", kind being FULL or INCR. The name is
-// sanitized for storage portability (same as logical backups); uniqueness comes
-// from the trailing backupID. The codec is recorded on the row, never in the
-// name, so the key is extension-less.
-func buildObjectName(
+// buildBackupLabel names the backup, not the file it produces:
+// "<dbName>-<kind>-<timestamp>-<backupID>", kind being FULL or INCR, sanitized for
+// storage portability the same way logical backups are. It stays the same across
+// codec attempts, so pg_basebackup reports one label for the whole backup.
+func buildBackupLabel(
 	databaseName string,
 	backupID uuid.UUID,
 	now time.Time,
@@ -161,6 +181,13 @@ func buildObjectName(
 		now.Format("20060102-150405"),
 		backupID.String(),
 	)
+}
+
+// Each codec attempt writes its own object, because a name whose cleanup is
+// pending cannot be written again. The codec is recorded on the row, never in the
+// key, so the name stays extension-less.
+func buildObjectName(label string, attemptID uuid.UUID) string {
+	return label + "-" + attemptID.String()
 }
 
 func verifyFullTimelineCompatibility(

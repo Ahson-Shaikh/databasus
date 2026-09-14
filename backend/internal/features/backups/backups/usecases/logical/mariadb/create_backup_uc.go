@@ -253,7 +253,7 @@ func (uc *CreateMariadbBackupUsecase) streamToStorage(
 		return nil, fmt.Errorf("failed to create zstd writer: %w", err)
 	}
 
-	fileWrite := backups_core_logical.StartBackgroundFileWrite(
+	fileWrite := storage_files.StartBackgroundWrite(
 		ctx,
 		fileStore,
 		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName},
