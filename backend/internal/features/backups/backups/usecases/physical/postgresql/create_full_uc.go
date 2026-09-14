@@ -157,19 +157,18 @@ func uploadHistoryForTimelineSwitch(ctx context.Context, common CommonBackupSpec
 	}
 	defer func() { _ = historyConn.Close(ctx) }()
 
-	if _, err := UploadHistoryFile(
-		ctx,
-		historyConn,
-		timelineID,
-		common.Storage,
-		common.SourceDB,
-		common.StorageID,
-		common.HistoryRepo,
-		common.Encryption,
-		common.MasterKey,
-		common.FieldEncryptor,
-		common.Logger,
-	); err != nil {
+	if _, err := UploadHistoryFile(ctx, HistoryUploadSpec{
+		Conn:           historyConn,
+		TimelineID:     timelineID,
+		FileStore:      common.FileStore,
+		SourceDB:       common.SourceDB,
+		StorageID:      common.StorageID,
+		HistoryRepo:    common.HistoryRepo,
+		Encryption:     common.Encryption,
+		MasterKey:      common.MasterKey,
+		FieldEncryptor: common.FieldEncryptor,
+		Logger:         common.Logger,
+	}); err != nil {
 		common.Logger.Warn("history upload failed; FULL stays COMPLETED",
 			"timeline_id", timelineID,
 			"error", err)

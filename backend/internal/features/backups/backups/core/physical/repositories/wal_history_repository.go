@@ -14,6 +14,15 @@ import (
 type PhysicalWalHistoryRepository struct{}
 
 func (r *PhysicalWalHistoryRepository) Insert(file *physical_models.PhysicalWalHistoryFile) error {
+	return r.InsertInTransaction(storage.GetDb(), file)
+}
+
+// InsertInTransaction lets the caller publish the history row and spend the write
+// receipts for its two files together.
+func (r *PhysicalWalHistoryRepository) InsertInTransaction(
+	tx *gorm.DB,
+	file *physical_models.PhysicalWalHistoryFile,
+) error {
 	if file.DatabaseID == uuid.Nil || file.StorageID == uuid.Nil {
 		return errors.New("database ID and storage ID are required")
 	}
@@ -21,11 +30,12 @@ func (r *PhysicalWalHistoryRepository) Insert(file *physical_models.PhysicalWalH
 	if file.ID == uuid.Nil {
 		file.ID = uuid.New()
 	}
+
 	if file.CreatedAt.IsZero() {
 		file.CreatedAt = time.Now().UTC()
 	}
 
-	return storage.GetDb().Create(file).Error
+	return tx.Create(file).Error
 }
 
 func (r *PhysicalWalHistoryRepository) FindByDatabaseTimeline(
