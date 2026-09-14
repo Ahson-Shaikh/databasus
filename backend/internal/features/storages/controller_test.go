@@ -33,9 +33,9 @@ import (
 	test_utils "databasus-backend/internal/util/testing"
 )
 
-type mockStorageReferenceReporter struct{}
+type mockStorageDatabaseCounter struct{}
 
-func (m *mockStorageReferenceReporter) GetStorageAttachedDatabasesIDs(
+func (m *mockStorageDatabaseCounter) GetStorageAttachedDatabasesIDs(
 	storageID uuid.UUID,
 ) ([]uuid.UUID, error) {
 	return []uuid.UUID{}, nil
@@ -420,7 +420,7 @@ func Test_WorkspaceRolePermissions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			router := createRouter()
-			SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
+			SetStorageDatabaseCountersForTest(&mockStorageDatabaseCounter{})
 
 			owner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 			workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Test Workspace", owner, router)
@@ -1136,7 +1136,7 @@ func Test_TransferStorage_PermissionsEnforced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			router := createRouter()
-			SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
+			SetStorageDatabaseCountersForTest(&mockStorageDatabaseCounter{})
 
 			sourceOwner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 			targetOwner := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
@@ -1228,7 +1228,7 @@ func Test_TransferStorage_PermissionsEnforced(t *testing.T) {
 
 func Test_TransferStorageNotManagableWorkspace_TransferFailed(t *testing.T) {
 	router := createRouter()
-	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
+	SetStorageDatabaseCountersForTest(&mockStorageDatabaseCounter{})
 
 	userA := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
 	userB := users_testing.CreateTestUser(t.Context(), users_enums.UserRoleMember)
@@ -1287,7 +1287,7 @@ func createRouter() *gin.Engine {
 
 	audit_logs.SetupDependencies()
 	SetupDependencies()
-	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
+	SetStorageDatabaseCountersForTest(&mockStorageDatabaseCounter{})
 
 	return router
 }
@@ -1359,7 +1359,9 @@ func Test_DeleteStorage_WhenCleanupIsPending_DrainsItBeforeTheCredentialsGo(t *t
 	workspace := workspaces_testing.CreateTestWorkspace(t.Context(), "Draining Storage Workspace", owner, router)
 	storage := CreateTestStorage(workspace.ID)
 
-	SetStorageDatabaseCountersForTest(&mockStorageReferenceReporter{})
+	t.Cleanup(func() { workspaces_testing.RemoveTestWorkspace(t.Context(), workspace, router) })
+
+	SetStorageDatabaseCountersForTest(&mockStorageDatabaseCounter{})
 
 	fileName := "drained-" + storage.ID.String()
 
@@ -1389,6 +1391,6 @@ type countingBackupCounter struct {
 	backupReferences int64
 }
 
-func (c *countingBackupCounter) GetStorageBackupReferences(uuid.UUID) (int64, error) {
+func (c *countingBackupCounter) GetStorageBackupReferenceCount(uuid.UUID) (int64, error) {
 	return c.backupReferences, nil
 }

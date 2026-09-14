@@ -366,8 +366,6 @@ func Test_MakeBackup_WhenMetadataIsUnusable_BackupFailsAndArtifactRemoved(t *tes
 	assertBackupFilesRemoved(t, fixture, backup.FileName)
 }
 
-// The caller names the files its scenario actually produced: asserting the absence
-// of a file nothing ever wrote would pass with no cleanup at all.
 // A receipt goes stale when something claims the file between the upload and the
 // publishing transaction. Bumping the generation by hand reproduces that without a
 // second goroutine racing the test.

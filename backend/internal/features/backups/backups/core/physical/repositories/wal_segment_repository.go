@@ -199,11 +199,6 @@ func (r *PhysicalWalSegmentRepository) FindByChainKey(
 	return &segment, nil
 }
 
-// MarkUploaded flips file_name from NULL to the durable object key, guarded by
-// file_name IS NULL so a DeleteFull cascade that removed the claim mid-upload
-// makes this a no-op. updated=true means the upload is durably committed;
-// updated=false means the NULL claim no longer exists (cascade caught it) and the
-// caller must DeleteFile the now-orphaned storage object.
 type WalSegmentUpload struct {
 	SegmentID        uuid.UUID
 	FileName         string
@@ -212,10 +207,9 @@ type WalSegmentUpload struct {
 	EncryptionIV     *string
 }
 
-func (r *PhysicalWalSegmentRepository) MarkUploaded(upload WalSegmentUpload) (updated bool, err error) {
-	return r.MarkUploadedInTransaction(storage.GetDb(), upload)
-}
-
+// The file_name IS NULL guard makes this a no-op when a DeleteFull cascade removed
+// the claim mid-upload. An updated=false result therefore means nothing published
+// the object, and the caller hands it back through the file store.
 func (r *PhysicalWalSegmentRepository) MarkUploadedInTransaction(
 	tx *gorm.DB,
 	upload WalSegmentUpload,

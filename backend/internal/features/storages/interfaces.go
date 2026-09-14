@@ -53,5 +53,5 @@ type StorageDatabaseCounter interface {
 // storage while they exist would make the objects unreachable. Each backup feature
 // counts its own rows, because the tables belong to it.
 type StorageBackupCounter interface {
-	GetStorageBackupReferences(storageID uuid.UUID) (int64, error)
+	GetStorageBackupReferenceCount(storageID uuid.UUID) (int64, error)
 }

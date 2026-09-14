@@ -31,11 +31,11 @@ func (s *StorageService) AddStorageBackupCounter(counter StorageBackupCounter) {
 	s.storageBackupCounters = append(s.storageBackupCounters, counter)
 }
 
-func (s *StorageService) GetStorageBackupReferences(storageID uuid.UUID) (int64, error) {
+func (s *StorageService) GetStorageBackupReferenceCount(storageID uuid.UUID) (int64, error) {
 	var total int64
 
 	for _, counter := range s.storageBackupCounters {
-		count, err := counter.GetStorageBackupReferences(storageID)
+		count, err := counter.GetStorageBackupReferenceCount(storageID)
 		if err != nil {
 			return 0, err
 		}
@@ -221,7 +221,7 @@ func (s *StorageService) DeleteStorage(
 		return ErrStorageHasAttachedDatabases
 	}
 
-	backupReferences, err := s.GetStorageBackupReferences(storage.ID)
+	backupReferences, err := s.GetStorageBackupReferenceCount(storage.ID)
 	if err != nil {
 		return err
 	}
