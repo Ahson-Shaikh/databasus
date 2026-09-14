@@ -11,6 +11,7 @@ var physicalBackupService = &PhysicalBackupService{
 	physical_repositories.GetFullBackupRepository(),
 	physical_repositories.GetWalSegmentRepository(),
 	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	encryption.GetFieldEncryptor(),
 	logger.GetLogger(),
 }

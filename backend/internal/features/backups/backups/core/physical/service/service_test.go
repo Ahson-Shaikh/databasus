@@ -18,6 +18,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
@@ -193,6 +194,26 @@ func Test_DeleteFull_WithDependents_CascadesEntireChainAndObjects(t *testing.T) 
 
 	gotHistory, _ := physical_repositories.GetWalHistoryRepository().FindByDatabaseTimeline(databaseID, 1)
 	assert.Nil(t, gotHistory, "history row must be gone")
+
+	// A cascade records the obligations and commits; the worker removes the objects
+	// afterwards, so the test drives it to completion before asserting absence.
+	names := []string{*full.FileName, manifestName, *full.FileName + ".metadata", history.FileName}
+	for _, incremental := range incrementals {
+		names = append(names,
+			*incremental.FileName, *incremental.ManifestFileName, *incremental.FileName+".metadata")
+	}
+
+	for _, walSegment := range walSegments {
+		names = append(names, *walSegment.FileName, *walSegment.FileName+".metadata")
+	}
+
+	references := make([]storage_files.StoredFileReference, 0, len(names))
+	for _, name := range names {
+		references = append(references,
+			storage_files.StoredFileReference{StorageID: prereqs.storage.ID, FileName: name})
+	}
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(), references...))
 
 	requireObjectAbsent(t, prereqs.storage, *full.FileName)
 	requireObjectAbsent(t, prereqs.storage, manifestName)
