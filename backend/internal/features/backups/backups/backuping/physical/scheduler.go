@@ -18,6 +18,7 @@ import (
 	physical_repositories "databasus-backend/internal/features/backups/backups/core/physical/repositories"
 	backups_config_physical "databasus-backend/internal/features/backups/config/physical"
 	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
+	storage_files "databasus-backend/internal/features/storages/files"
 	tasks_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	"databasus-backend/internal/storage"
 )
@@ -44,6 +45,7 @@ type PhysicalBackupsScheduler struct {
 	backupConfigService       *backups_config_physical.BackupConfigService
 	chainViewService          *chain_view.ChainViewService
 	taskCancellationRequester *tasks_cancellation.Requester
+	fileStore                 *storage_files.Store
 	backuper                  *PhysicalBackuper
 
 	lastTickTime atomicTime
@@ -621,7 +623,7 @@ func (s *PhysicalBackupsScheduler) recoverInFlightBackupsOnRestart(
 	for _, claim := range claims {
 		claimedBackupIDs[claim.BackupID] = struct{}{}
 
-		s.failOrphanedBackup(ctx, logger, claim.BackupType, claim.BackupID, claim.DatabaseID)
+		s.failOrphanedBackup(ctx, logger, s.describeOrphan(logger, claim))
 	}
 
 	return s.failClaimlessInProgressBackups(ctx, logger, claimedBackupIDs)
@@ -650,7 +652,14 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 		logger.WarnContext(ctx, "found an in-progress full backup with no in-flight claim",
 			"backup_id", full.ID, "database_id", full.DatabaseID)
 
-		s.failOrphanedBackup(ctx, logger, physical_enums.PhysicalBackupTypeFull, full.ID, full.DatabaseID)
+		s.failOrphanedBackup(ctx, logger, orphanedBackupSpec{
+			Kind:             physical_enums.PhysicalBackupTypeFull,
+			BackupID:         full.ID,
+			DatabaseID:       full.DatabaseID,
+			StorageID:        full.StorageID,
+			FileName:         valueOrEmpty(full.FileName),
+			ManifestFileName: valueOrEmpty(full.ManifestFileName),
+		})
 	}
 
 	incrementals, err := s.incrRepo.FindAllInProgress()
@@ -666,29 +675,86 @@ func (s *PhysicalBackupsScheduler) failClaimlessInProgressBackups(
 		logger.WarnContext(ctx, "found an in-progress incremental backup with no in-flight claim",
 			"backup_id", incremental.ID, "database_id", incremental.DatabaseID)
 
-		s.failOrphanedBackup(ctx, logger,
-			physical_enums.PhysicalBackupTypeIncremental, incremental.ID, incremental.DatabaseID)
+		s.failOrphanedBackup(ctx, logger, orphanedBackupSpec{
+			Kind:             physical_enums.PhysicalBackupTypeIncremental,
+			BackupID:         incremental.ID,
+			DatabaseID:       incremental.DatabaseID,
+			StorageID:        incremental.StorageID,
+			FileName:         valueOrEmpty(incremental.FileName),
+			ManifestFileName: valueOrEmpty(incremental.ManifestFileName),
+		})
 	}
 
 	return nil
 }
 
+// A claim carries no file name of its own, and the sweep cannot hand back what it
+// cannot name.
+func (s *PhysicalBackupsScheduler) describeOrphan(
+	logger *slog.Logger,
+	claim *physical_models.PhysicalInFlightBackup,
+) orphanedBackupSpec {
+	spec := orphanedBackupSpec{
+		Kind:       claim.BackupType,
+		BackupID:   claim.BackupID,
+		DatabaseID: claim.DatabaseID,
+	}
+
+	if claim.BackupType == physical_enums.PhysicalBackupTypeIncremental {
+		row, err := s.incrRepo.FindByID(claim.BackupID)
+		if err != nil || row == nil {
+			logger.Warn("could not read an orphaned incremental backup row", "backup_id", claim.BackupID)
+
+			return spec
+		}
+
+		spec.StorageID = row.StorageID
+		spec.FileName = valueOrEmpty(row.FileName)
+		spec.ManifestFileName = valueOrEmpty(row.ManifestFileName)
+
+		return spec
+	}
+
+	row, err := s.fullRepo.FindByID(claim.BackupID)
+	if err != nil || row == nil {
+		logger.Warn("could not read an orphaned full backup row", "backup_id", claim.BackupID)
+
+		return spec
+	}
+
+	spec.StorageID = row.StorageID
+	spec.FileName = valueOrEmpty(row.FileName)
+	spec.ManifestFileName = valueOrEmpty(row.ManifestFileName)
+
+	return spec
+}
+
+// orphanedBackupSpec is one IN_PROGRESS row the previous run left behind, with
+// the names its files carry so the sweep can hand them back.
+type orphanedBackupSpec struct {
+	Kind             physical_enums.PhysicalBackupType
+	BackupID         uuid.UUID
+	DatabaseID       uuid.UUID
+	StorageID        uuid.UUID
+	FileName         string
+	ManifestFileName string
+}
+
 func (s *PhysicalBackupsScheduler) failOrphanedBackup(
 	ctx context.Context,
 	logger *slog.Logger,
-	kind physical_enums.PhysicalBackupType,
-	backupID, databaseID uuid.UUID,
+	spec orphanedBackupSpec,
 ) {
-	logger = logger.With("backup_id", backupID, "database_id", databaseID)
+	logger = logger.With("backup_id", spec.BackupID, "database_id", spec.DatabaseID)
 
 	// Best-effort cancel of any locally-registered task; harmless if none
 	// (a fresh process holds no registrations).
-	if err := s.taskCancellationRequester.RequestCancellation(ctx, backupID); err != nil {
+	if err := s.taskCancellationRequester.RequestCancellation(ctx, spec.BackupID); err != nil {
 		logger.ErrorContext(ctx, "failed to cancel orphaned backup task", "error", err)
 	}
 
-	if err := s.failBackupAndReleaseClaim(
-		kind, backupID, databaseID, physical_enums.PhysicalBackupErrorApplicationRestart,
+	if err := s.failBackupAndReleaseClaim(ctx, spec,
+		physical_enums.PhysicalBackupErrorApplicationRestart,
 		"Backup was interrupted by an application restart and marked failed. Trigger a new backup.",
 	); err != nil {
 		logger.ErrorContext(ctx, "failed to fail orphaned backup on restart", "error", err)
@@ -697,7 +763,7 @@ func (s *PhysicalBackupsScheduler) failOrphanedBackup(
 	}
 
 	logger.InfoContext(ctx, fmt.Sprintf(
-		"failed a %s backup orphaned by the previous run", kind))
+		"failed a %s backup orphaned by the previous run", spec.Kind))
 }
 
 // failBackupAndReleaseClaim flips one typed row to ERROR and deletes the
@@ -705,22 +771,16 @@ func (s *PhysicalBackupsScheduler) failOrphanedBackup(
 // essential: an orphan claim left behind would block every future tick from
 // acquiring the cross-table single-in-flight slot for that DB, freezing it.
 //
-// It deliberately does NOT touch storage. A row reaches this path only while
-// IN_PROGRESS, and claimAndInsert inserts FULL/INCR rows with file_name = NULL —
-// a name is written only at COMPLETED. A NULL file_name is proof no object was
-// ever uploaded under any name, so there is nothing to delete (the same reasoning
-// as PhysicalWalSegmentRepository.DeleteAbandonedClaims). This MUST be revisited
-// if physical FULL ever starts writing file_name at upload start: at that point a
-// rolled-back row could reference a partial object that needs storage cleanup
-// before the status flip.
+// The sweep hands the row's files back to cleanup in the same transaction, gated
+// on the status flip taking effect.
 func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
-	kind physical_enums.PhysicalBackupType,
-	backupID, databaseID uuid.UUID,
+	ctx context.Context,
+	spec orphanedBackupSpec,
 	reason physical_enums.PhysicalBackupErrorReason,
 	message string,
 ) error {
 	var typedModel any = &physical_models.PhysicalFullBackup{}
-	if kind == physical_enums.PhysicalBackupTypeIncremental {
+	if spec.Kind == physical_enums.PhysicalBackupTypeIncremental {
 		typedModel = &physical_models.PhysicalIncrementalBackup{}
 	}
 
@@ -728,14 +788,33 @@ func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
 		// Guard on IN_PROGRESS so a late completion that already wrote a terminal
 		// status wins the race — the backuper's persist and this sweep both
 		// conditionally transition the row, so at most one of them takes effect.
-		if err := tx.Model(typedModel).
-			Where("id = ? AND status = ?", backupID, physical_enums.PhysicalBackupStatusInProgress).
+		transition := tx.Model(typedModel).
+			Where("id = ? AND status = ?", spec.BackupID, physical_enums.PhysicalBackupStatusInProgress).
 			Updates(map[string]any{
 				"status":       physical_enums.PhysicalBackupStatusError,
 				"error_reason": reason,
 				"fail_message": message,
-			}).Error; err != nil {
-			return err
+			})
+		if transition.Error != nil {
+			return transition.Error
+		}
+
+		// Only the sweep that actually moved the row owns its files. A late
+		// completion that already wrote a terminal status keeps them.
+		if transition.RowsAffected == 1 && spec.FileName != "" {
+			references := []storage_files.StoredFileReference{
+				{StorageID: spec.StorageID, FileName: spec.FileName},
+				{StorageID: spec.StorageID, FileName: spec.FileName + metadataSuffix},
+			}
+
+			if spec.ManifestFileName != "" {
+				references = append(references,
+					storage_files.StoredFileReference{StorageID: spec.StorageID, FileName: spec.ManifestFileName})
+			}
+
+			if err := s.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {
+				return err
+			}
 		}
 
 		// Scope the claim delete to backup_id so failing a stale backup cannot
@@ -743,10 +822,18 @@ func (s *PhysicalBackupsScheduler) failBackupAndReleaseClaim(
 		return tx.Delete(
 			&physical_models.PhysicalInFlightBackup{},
 			"database_id = ? AND backup_id = ?",
-			databaseID,
-			backupID,
+			spec.DatabaseID,
+			spec.BackupID,
 		).Error
 	})
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }
 
 func createdAtOrNil(full *physical_models.PhysicalFullBackup) *time.Time {

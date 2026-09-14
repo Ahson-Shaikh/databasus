@@ -20,12 +20,30 @@ type StorageService struct {
 	auditLogService         *audit_logs.AuditLogService
 	fieldEncryptor          encryption.FieldEncryptor
 	storageDatabaseCounters []StorageDatabaseCounter
+	storageBackupCounters   []StorageBackupCounter
 }
 
-func (s *StorageService) AddStorageDatabaseCounter(
-	storageDatabaseCounter StorageDatabaseCounter,
-) {
-	s.storageDatabaseCounters = append(s.storageDatabaseCounters, storageDatabaseCounter)
+func (s *StorageService) AddStorageDatabaseCounter(counter StorageDatabaseCounter) {
+	s.storageDatabaseCounters = append(s.storageDatabaseCounters, counter)
+}
+
+func (s *StorageService) AddStorageBackupCounter(counter StorageBackupCounter) {
+	s.storageBackupCounters = append(s.storageBackupCounters, counter)
+}
+
+func (s *StorageService) GetStorageBackupReferenceCount(storageID uuid.UUID) (int64, error) {
+	var total int64
+
+	for _, counter := range s.storageBackupCounters {
+		count, err := counter.GetStorageBackupReferenceCount(storageID)
+		if err != nil {
+			return 0, err
+		}
+
+		total += count
+	}
+
+	return total, nil
 }
 
 func (s *StorageService) GetStorageAttachedDatabasesIDs(
@@ -76,7 +94,13 @@ func (s *StorageService) OnBeforeWorkspaceDeletion(workspaceID uuid.UUID) error 
 		return fmt.Errorf("failed to get storages for workspace deletion: %w", err)
 	}
 
+	// The listener contract carries no context, and the drain needs one that is not
+	// already cancelled by the finished request.
+	ctx := context.Background()
+
 	for _, storage := range storages {
+		s.drainPendingDeletions(ctx, storage)
+
 		if err := s.storageRepository.Delete(storage); err != nil {
 			return fmt.Errorf("failed to delete storage %s: %w", storage.ID, err)
 		}
@@ -196,6 +220,17 @@ func (s *StorageService) DeleteStorage(
 	if len(attachedDatabasesIDs) > 0 {
 		return ErrStorageHasAttachedDatabases
 	}
+
+	backupReferences, err := s.GetStorageBackupReferenceCount(storage.ID)
+	if err != nil {
+		return err
+	}
+
+	if backupReferences > 0 {
+		return ErrStorageHasBackups
+	}
+
+	s.drainPendingDeletions(ctx, storage)
 
 	err = s.storageRepository.Delete(storage)
 	if err != nil {

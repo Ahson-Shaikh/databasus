@@ -2,6 +2,7 @@ package backuping_physical
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,8 +20,11 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
 	notifier_models "databasus-backend/internal/features/notifiers/models"
+	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/storage"
+	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 	"databasus-backend/internal/util/walmath"
 )
@@ -140,7 +144,7 @@ func Test_PersistFullResult_WhenCompleted_CopiesCompressionManifestFieldsAndRele
 		CompletedAt:            time.Now().UTC(),
 	}
 
-	require.NoError(t, backuper.persistFullResult(fullBackup, result, nil))
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
 
 	persisted, err := physical_repositories.GetFullBackupRepository().FindByID(fullBackup.ID)
 	require.NoError(t, err)
@@ -174,7 +178,7 @@ func Test_PersistFullResult_WhenCompletedWithMeasuredClusterSize_StoresRawSizeMb
 		CompletedAt:  time.Now().UTC(),
 	}
 
-	require.NoError(t, backuper.persistFullResult(fullBackup, result, new(4321.5)))
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, new(4321.5)))
 
 	persisted, err := physical_repositories.GetFullBackupRepository().FindByID(fullBackup.ID)
 	require.NoError(t, err)
@@ -197,7 +201,7 @@ func Test_PersistFullResult_WhenClusterSizeUnmeasured_LeavesRawSizeMbNil(t *test
 		CompletedAt:  time.Now().UTC(),
 	}
 
-	require.NoError(t, backuper.persistFullResult(fullBackup, result, nil))
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
 
 	persisted, err := physical_repositories.GetFullBackupRepository().FindByID(fullBackup.ID)
 	require.NoError(t, err)
@@ -221,7 +225,7 @@ func Test_PersistFullResult_WhenErrorStatus_RecordsTerminalTimeAndReleasesInFlig
 		ManifestFileName: "should-not-be-copied",
 	}
 
-	require.NoError(t, backuper.persistFullResult(fullBackup, result, nil))
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
 
 	persisted, err := physical_repositories.GetFullBackupRepository().FindByID(fullBackup.ID)
 	require.NoError(t, err)
@@ -247,7 +251,7 @@ func Test_PersistIncrementalResult_WhenErrorStatus_RecordsTerminalTime(t *testin
 		Status:      physical_enums.PhysicalBackupStatusChainBroken,
 		ErrorReason: new(physical_enums.PhysicalBackupErrorTimelineSwitchDetected),
 	}
-	require.NoError(t, backuper.persistIncrResult(incremental, result))
+	require.NoError(t, backuper.persistIncrResult(t.Context(), incremental, result))
 
 	persistedIncremental, err := physical_repositories.GetIncrementalBackupRepository().FindByID(incremental.ID)
 	require.NoError(t, err)
@@ -275,7 +279,7 @@ func Test_PersistIncrementalResult_WhenCompleted_CopiesFieldsAndReleasesInFlight
 		CompletedAt:      time.Now().UTC(),
 	}
 
-	require.NoError(t, backuper.persistIncrResult(incrBackup, result))
+	require.NoError(t, backuper.persistIncrResult(t.Context(), incrBackup, result))
 
 	persisted, err := physical_repositories.GetIncrementalBackupRepository().FindByID(incrBackup.ID)
 	require.NoError(t, err)
@@ -811,7 +815,7 @@ func Test_PersistFullResult_WhenRowNoLongerInProgress_DoesNotResurrect(t *testin
 	newBackupID := uuid.New()
 	claimInFlight(t, prereqs.DB.ID, physical_enums.PhysicalBackupTypeFull, newBackupID)
 
-	err := backuper.persistFullResult(full, postgresql_executor.PhysicalBackupResult{
+	err := backuper.persistFullResult(t.Context(), full, postgresql_executor.PhysicalBackupResult{
 		Status: physical_enums.PhysicalBackupStatusCompleted,
 	}, nil)
 	require.NoError(t, err)
@@ -910,4 +914,118 @@ func assertInFlightReleased(t *testing.T, databaseID uuid.UUID) {
 	inFlight, err := physical_repositories.GetInFlightBackupRepository().FindByDatabaseID(databaseID)
 	require.NoError(t, err)
 	assert.Nil(t, inFlight, "in-flight claim must be released")
+}
+
+func Test_PersistFullResult_WhenCompleted_KeepsTheFilesTheAttemptWrote(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	backuper := CreateTestPhysicalBackuper(nil)
+
+	fullBackup := seedInProgressFull(t, prereqs)
+	claimInFlight(t, prereqs.DB.ID, physical_enums.PhysicalBackupTypeFull, fullBackup.ID)
+
+	fileName := "physical-completed-" + fullBackup.ID.String()
+
+	receipt, err := storages.GetStorageFileStore().WriteFile(
+		t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+		strings.NewReader("physical artifact"),
+	)
+	require.NoError(t, err)
+
+	result := postgresql_executor.PhysicalBackupResult{
+		Status:      physical_enums.PhysicalBackupStatusCompleted,
+		FileName:    fileName,
+		Receipts:    []storage_files.WriteReceipt{receipt},
+		CompletedAt: time.Now().UTC(),
+	}
+
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+	))
+
+	reader, err := prereqs.Storage.GetFile(
+		t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), fileName,
+	)
+	require.NoError(t, err, "a published backup keeps its artifact")
+	require.NoError(t, reader.Close())
+}
+
+func Test_PersistFullResult_WhenCancelled_HandsTheFilesBackToCleanup(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	backuper := CreateTestPhysicalBackuper(nil)
+
+	fullBackup := seedInProgressFull(t, prereqs)
+	claimInFlight(t, prereqs.DB.ID, physical_enums.PhysicalBackupTypeFull, fullBackup.ID)
+
+	fileName := "physical-cancelled-" + fullBackup.ID.String()
+	manifestName := fileName + ".manifest"
+
+	for _, name := range []string{fileName, manifestName} {
+		_, err := storages.GetStorageFileStore().WriteFile(
+			t.Context(),
+			storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: name},
+			strings.NewReader("partial physical artifact"),
+		)
+		require.NoError(t, err)
+	}
+
+	result := postgresql_executor.PhysicalBackupResult{
+		Status:           physical_enums.PhysicalBackupStatusCanceled,
+		FileName:         fileName,
+		ManifestFileName: manifestName,
+		CompletedAt:      time.Now().UTC(),
+	}
+
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: manifestName},
+	))
+
+	for _, name := range []string{fileName, manifestName} {
+		_, err := prereqs.Storage.GetFile(
+			t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), name,
+		)
+		assert.Error(t, err, "%s must not survive a cancelled backup", name)
+	}
+}
+
+func Test_PersistFullResult_WhenFailed_HandsTheFilesBackToCleanup(t *testing.T) {
+	prereqs := seedBackupPrereqs(t)
+	backuper := CreateTestPhysicalBackuper(nil)
+
+	fullBackup := seedInProgressFull(t, prereqs)
+	claimInFlight(t, prereqs.DB.ID, physical_enums.PhysicalBackupTypeFull, fullBackup.ID)
+
+	fileName := "physical-failed-" + fullBackup.ID.String()
+
+	_, err := storages.GetStorageFileStore().WriteFile(
+		t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+		strings.NewReader("partial physical artifact"),
+	)
+	require.NoError(t, err)
+
+	reason := physical_enums.PhysicalBackupErrorPgBasebackupFailed
+	result := postgresql_executor.PhysicalBackupResult{
+		Status:       physical_enums.PhysicalBackupStatusError,
+		ErrorReason:  &reason,
+		ErrorMessage: "pg_basebackup failed after producing output",
+		FileName:     fileName,
+		CompletedAt:  time.Now().UTC(),
+	}
+
+	require.NoError(t, backuper.persistFullResult(t.Context(), fullBackup, result, nil))
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(),
+		storage_files.StoredFileReference{StorageID: prereqs.Storage.ID, FileName: fileName},
+	))
+
+	_, err = prereqs.Storage.GetFile(
+		t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), fileName,
+	)
+	assert.Error(t, err, "a failed physical backup must not leave its artifact behind")
 }

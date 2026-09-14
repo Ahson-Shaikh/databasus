@@ -182,13 +182,7 @@ func (f *FTPStorage) DeleteFile(
 
 	filePath := f.getFilePath(fileName)
 
-	_, err = conn.FileSize(filePath)
-	if err != nil {
-		return nil
-	}
-
-	err = conn.Delete(filePath)
-	if err != nil {
+	if err := conn.Delete(filePath); err != nil && !isFtpFileUnavailable(err) {
 		return fmt.Errorf("failed to delete file from FTP: %w", err)
 	}
 
@@ -443,6 +437,17 @@ func (f *FTPStorage) retrieveFileFromOffset(
 		conn:                 conn,
 		stopDeadlineOnCancel: stopDeadlineOnCancel,
 	}, nil
+}
+
+// 550 is the only reply an FTP server has for a missing file, and also its reply
+// for a refused one, so absence is the closest reading the protocol allows.
+func isFtpFileUnavailable(err error) bool {
+	var protocolError *textproto.Error
+	if !errors.As(err, &protocolError) {
+		return false
+	}
+
+	return protocolError.Code == ftp.StatusFileUnavailable
 }
 
 func isUnsupportedFtpCommand(err error) bool {

@@ -18,6 +18,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
 	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
@@ -90,6 +91,20 @@ func objectExists(t *testing.T, st *storages.Storage, fileName string) bool {
 	return true
 }
 
+func requireObjectAbsent(t *testing.T, backupStorage *storages.Storage, fileName string) {
+	t.Helper()
+
+	reader, err := backupStorage.GetFile(t.Context(), encryption.GetFieldEncryptor(), logger.GetLogger(), fileName)
+	if err == nil {
+		require.NoError(t, reader.Close())
+		require.Failf(t, "storage object still exists", "file_name=%s", fileName)
+
+		return
+	}
+
+	require.ErrorContains(t, err, "file not found:")
+}
+
 func lsn(segments int) walmath.LSN {
 	return walmath.LSN(segments * segmentMB * 1024 * 1024)
 }
@@ -106,20 +121,25 @@ func Test_DeleteFull_WithDependents_CascadesEntireChainAndObjects(t *testing.T) 
 	fullModel.BackupSizeMb = new(100.0)
 	full := physical_testing.CreateTestFullBackup(t, fullModel)
 
-	firstIncr := physical_testing.CreateTestIncrementalBackup(t,
-		physical_testing.NewTestCompletedIncrementalBackup(databaseID, storageID, full.ID, nil, 1, lsn(1), lsn(2)))
-	physical_testing.CreateTestIncrementalBackup(
-		t,
-		physical_testing.NewTestCompletedIncrementalBackup(
-			databaseID,
-			storageID,
-			full.ID,
-			&firstIncr.ID,
-			1,
-			lsn(2),
-			lsn(3),
-		),
+	firstIncrModel := physical_testing.NewTestCompletedIncrementalBackup(
+		databaseID, storageID, full.ID, nil, 1, lsn(1), lsn(2))
+	firstIncrManifestName := *firstIncrModel.FileName + ".manifest"
+	firstIncrModel.ManifestFileName = &firstIncrManifestName
+	firstIncr := physical_testing.CreateTestIncrementalBackup(t, firstIncrModel)
+
+	secondIncrModel := physical_testing.NewTestCompletedIncrementalBackup(
+		databaseID,
+		storageID,
+		full.ID,
+		&firstIncr.ID,
+		1,
+		lsn(2),
+		lsn(3),
 	)
+	secondIncrManifestName := *secondIncrModel.FileName + ".manifest"
+	secondIncrModel.ManifestFileName = &secondIncrManifestName
+	secondIncr := physical_testing.CreateTestIncrementalBackup(t, secondIncrModel)
+	incrementals := []*physical_models.PhysicalIncrementalBackup{firstIncr, secondIncr}
 
 	walSegments := []*physical_models.PhysicalWalSegment{
 		physical_testing.NewTestWalSegment(databaseID, storageID, 1, "000000010000000000000001", lsn(1), lsn(2)),
@@ -141,10 +161,17 @@ func Test_DeleteFull_WithDependents_CascadesEntireChainAndObjects(t *testing.T) 
 	saveObject(t, prereqs.storage, *full.FileName)
 	saveObject(t, prereqs.storage, manifestName)
 	saveObject(t, prereqs.storage, *full.FileName+".metadata")
+	for _, incremental := range incrementals {
+		saveObject(t, prereqs.storage, *incremental.FileName)
+		saveObject(t, prereqs.storage, *incremental.ManifestFileName)
+		saveObject(t, prereqs.storage, *incremental.FileName+".metadata")
+	}
 	for _, walSegment := range walSegments {
 		saveObject(t, prereqs.storage, *walSegment.FileName)
+		saveObject(t, prereqs.storage, *walSegment.FileName+".metadata")
 	}
 	saveObject(t, prereqs.storage, history.FileName)
+	saveObject(t, prereqs.storage, history.FileName+".metadata")
 
 	summary, err := service.DeleteFull(t.Context(), full.ID, 1_000_000)
 	require.NoError(t, err)
@@ -168,12 +195,40 @@ func Test_DeleteFull_WithDependents_CascadesEntireChainAndObjects(t *testing.T) 
 	gotHistory, _ := physical_repositories.GetWalHistoryRepository().FindByDatabaseTimeline(databaseID, 1)
 	assert.Nil(t, gotHistory, "history row must be gone")
 
-	assert.False(t, objectExists(t, prereqs.storage, *full.FileName), "full artifact gone")
-	assert.False(t, objectExists(t, prereqs.storage, manifestName), "full manifest gone")
-	assert.False(t, objectExists(t, prereqs.storage, *full.FileName+".metadata"), "full sidecar gone")
-	for _, walSegment := range walSegments {
-		assert.False(t, objectExists(t, prereqs.storage, *walSegment.FileName), "wal artifact gone")
+	// A cascade records the obligations and commits; the worker removes the objects
+	// afterwards, so the test drives it to completion before asserting absence.
+	names := []string{*full.FileName, manifestName, *full.FileName + ".metadata", history.FileName}
+	for _, incremental := range incrementals {
+		names = append(names,
+			*incremental.FileName, *incremental.ManifestFileName, *incremental.FileName+".metadata")
 	}
+
+	for _, walSegment := range walSegments {
+		names = append(names, *walSegment.FileName, *walSegment.FileName+".metadata")
+	}
+
+	references := make([]storage_files.StoredFileReference, 0, len(names))
+	for _, name := range names {
+		references = append(references,
+			storage_files.StoredFileReference{StorageID: prereqs.storage.ID, FileName: name})
+	}
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(), references...))
+
+	requireObjectAbsent(t, prereqs.storage, *full.FileName)
+	requireObjectAbsent(t, prereqs.storage, manifestName)
+	requireObjectAbsent(t, prereqs.storage, *full.FileName+".metadata")
+	for _, incremental := range incrementals {
+		requireObjectAbsent(t, prereqs.storage, *incremental.FileName)
+		requireObjectAbsent(t, prereqs.storage, *incremental.ManifestFileName)
+		requireObjectAbsent(t, prereqs.storage, *incremental.FileName+".metadata")
+	}
+	for _, walSegment := range walSegments {
+		requireObjectAbsent(t, prereqs.storage, *walSegment.FileName)
+		requireObjectAbsent(t, prereqs.storage, *walSegment.FileName+".metadata")
+	}
+	requireObjectAbsent(t, prereqs.storage, history.FileName)
+	requireObjectAbsent(t, prereqs.storage, history.FileName+".metadata")
 
 	survivingSuccessor, _ := physical_repositories.GetFullBackupRepository().FindByID(successor.ID)
 	assert.NotNil(t, survivingSuccessor, "successor chain on TL2 must be untouched")
@@ -748,4 +803,40 @@ func Test_GetLastBackupTimesByDatabaseIDs_EmptyInput_ReturnsEmptyMap(t *testing.
 
 	assert.NotNil(t, lastBackupTimes)
 	assert.Empty(t, lastBackupTimes)
+}
+
+func Test_OnBeforeDatabaseRemove_HandsEveryPhysicalArtifactBackToCleanup(t *testing.T) {
+	prereqs := createServiceTestPrereqs(t)
+	databaseID := prereqs.database.ID
+	storageID := prereqs.storage.ID
+
+	fullModel := physical_testing.NewTestCompletedFullBackup(databaseID, storageID, 1, lsn(0), lsn(1))
+	manifestName := *fullModel.FileName + ".manifest"
+	fullModel.ManifestFileName = &manifestName
+	full := physical_testing.CreateTestFullBackup(t, fullModel)
+
+	history := physical_testing.CreateTestWalHistoryFile(t,
+		physical_testing.NewTestWalHistoryFile(databaseID, storageID, 1))
+
+	names := []string{*full.FileName, manifestName, *full.FileName + ".metadata", history.FileName}
+	for _, name := range names {
+		saveObject(t, prereqs.storage, name)
+	}
+
+	// Every physical table cascades on databases.id, so this listener is the last
+	// moment the names exist anywhere.
+	require.NoError(t,
+		physical_service.GetPhysicalBackupService().OnBeforeDatabaseRemove(t.Context(), databaseID))
+
+	references := make([]storage_files.StoredFileReference, 0, len(names))
+	for _, name := range names {
+		references = append(references,
+			storage_files.StoredFileReference{StorageID: storageID, FileName: name})
+	}
+
+	require.NoError(t, storages.DrainStorageFileDeletions(t.Context(), references...))
+
+	for _, name := range names {
+		requireObjectAbsent(t, prereqs.storage, name)
+	}
 }

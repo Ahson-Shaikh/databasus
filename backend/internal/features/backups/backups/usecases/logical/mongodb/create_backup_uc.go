@@ -21,7 +21,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	mongodbtypes "databasus-backend/internal/features/databases/databases/mongodb"
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
-	"databasus-backend/internal/features/storages"
+	storage_files "databasus-backend/internal/features/storages/files"
 	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/namelist"
 	"databasus-backend/internal/util/tools"
@@ -55,10 +55,10 @@ func (uc *CreateMongodbBackupUsecase) Execute(
 	backup *backups_core_logical.LogicalBackup,
 	backupConfig *backups_config_logical.LogicalBackupConfig,
 	db *databases.Database,
-	storage *storages.Storage,
+	fileStore backups_core_logical.BackupFileStore,
 	backupProgressListener func(completedMBs float64),
-) (*backups_core_logical.BackupMetadata, error) {
-	logger := uc.logger.With("database_id", db.ID, "storage_id", storage.ID)
+) (*backups_core_logical.BackupArtifacts, error) {
+	logger := uc.logger.With("database_id", db.ID, "storage_id", backup.StorageID)
 
 	logger.InfoContext(ctx, "creating mongodb backup via mongodump")
 
@@ -102,7 +102,7 @@ func (uc *CreateMongodbBackupUsecase) Execute(
 		backupConfig,
 		tools.GetMongodbExecutable(tools.MongodbExecutableMongodump),
 		args,
-		storage,
+		fileStore,
 		backupProgressListener,
 	)
 }
@@ -139,9 +139,9 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 	backupConfig *backups_config_logical.LogicalBackupConfig,
 	mongodumpBin string,
 	args []string,
-	storage *storages.Storage,
+	fileStore backups_core_logical.BackupFileStore,
 	backupProgressListener func(completedMBs float64),
-) (*backups_core_logical.BackupMetadata, error) {
+) (*backups_core_logical.BackupArtifacts, error) {
 	uc.logger.InfoContext(parentCtx, "streaming MongoDB backup to storage", "mongodump_bin", mongodumpBin)
 
 	ctx, cancel := uc.createBackupContext(parentCtx)
@@ -192,23 +192,17 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 		return nil, err
 	}
 
-	saveErrCh := make(chan error, 1)
-	go func() {
-		saveErr := storage.SaveFile(
-			ctx,
-			uc.fieldEncryptor,
-			uc.logger,
-			backup.FileName,
-			storageReader,
-		)
-		if saveErr != nil {
-			_ = storageReader.CloseWithError(saveErr)
-			cancel(saveErr)
-		}
-		saveErrCh <- saveErr
-	}()
+	fileWrite := storage_files.StartBackgroundWrite(
+		ctx,
+		fileStore,
+		storage_files.StoredFileReference{StorageID: backup.StorageID, FileName: backup.FileName},
+		storageReader,
+		cancel,
+	)
 
 	if err = cmd.Start(); err != nil {
+		uc.cleanupOnCancellation(encryptionWriter, storageWriter, fileWrite.Errors)
+
 		return nil, fmt.Errorf("start %s: %w", filepath.Base(mongodumpBin), err)
 	}
 
@@ -230,28 +224,28 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 	waitErr := cmd.Wait()
 
 	select {
-	case earlySaveErr := <-saveErrCh:
+	case earlySaveErr := <-fileWrite.Errors:
 		if earlySaveErr != nil {
 			_ = uc.closeWriters(encryptionWriter, storageWriter)
 			return nil, fmt.Errorf("save to storage: %w", earlySaveErr)
 		}
-		saveErrCh <- nil
+		fileWrite.Errors <- nil
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		uc.cleanupOnCancellation(encryptionWriter, storageWriter, saveErrCh)
+		uc.cleanupOnCancellation(encryptionWriter, storageWriter, fileWrite.Errors)
 		return nil, uc.classifyCancellation(ctx)
 	default:
 	}
 
 	if err := uc.closeWriters(encryptionWriter, storageWriter); err != nil {
-		<-saveErrCh
+		<-fileWrite.Errors
 		return nil, err
 	}
 
-	saveErr := <-saveErrCh
+	saveErr := <-fileWrite.Errors
 	stderrOutput := <-stderrCh
 
 	if waitErr == nil && copyErr == nil && saveErr == nil && backupProgressListener != nil {
@@ -268,7 +262,10 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 		return nil, fmt.Errorf("save to storage: %w", saveErr)
 	}
 
-	return &backupMetadata, nil
+	return &backups_core_logical.BackupArtifacts{
+		Metadata: &backupMetadata,
+		Receipts: []storage_files.WriteReceipt{<-fileWrite.Receipts},
+	}, nil
 }
 
 func (uc *CreateMongodbBackupUsecase) createBackupContext(
@@ -405,13 +402,13 @@ func (uc *CreateMongodbBackupUsecase) copyWithShutdownCheck(
 func (uc *CreateMongodbBackupUsecase) cleanupOnCancellation(
 	encryptionWriter *backup_encryption.EncryptionWriter,
 	storageWriter *io.PipeWriter,
-	saveErrCh chan error,
+	writeErrors chan error,
 ) {
 	if encryptionWriter != nil {
 		_ = encryptionWriter.Close()
 	}
 	_ = storageWriter.CloseWithError(errors.New("backup cancelled"))
-	<-saveErrCh
+	<-writeErrors
 }
 
 func (uc *CreateMongodbBackupUsecase) closeWriters(

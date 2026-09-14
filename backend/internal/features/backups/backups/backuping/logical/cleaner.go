@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"databasus-backend/internal/features/backups/backups/backuping/shared/gfs"
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
-	"databasus-backend/internal/features/storages"
-	util_encryption "databasus-backend/internal/util/encryption"
+	storage_files "databasus-backend/internal/features/storages/files"
+	db "databasus-backend/internal/storage"
 	"databasus-backend/internal/util/period"
 )
 
@@ -26,9 +27,8 @@ const (
 
 type BackupCleaner struct {
 	backupRepository      *backups_core_logical.BackupRepository
-	storageService        *storages.StorageService
+	fileStore             *storage_files.Store
 	backupConfigService   *backups_config_logical.BackupConfigService
-	fieldEncryptor        util_encryption.FieldEncryptor
 	logger                *slog.Logger
 	backupRemoveListeners []backups_core_logical.BackupRemoveListener
 
@@ -72,33 +72,27 @@ func (c *BackupCleaner) Run(ctx context.Context) {
 }
 
 func (c *BackupCleaner) DeleteBackup(ctx context.Context, backup *backups_core_logical.LogicalBackup) error {
-	logger := c.logger.With("backup_id", backup.ID, "database_id", backup.DatabaseID)
-
 	for _, listener := range c.backupRemoveListeners {
 		if err := listener.OnBeforeBackupRemove(backup); err != nil {
 			return err
 		}
 	}
 
-	storage, err := c.storageService.GetStorageByID(ctx, backup.StorageID)
-	if err != nil {
-		return err
+	references := []storage_files.StoredFileReference{
+		{StorageID: backup.StorageID, FileName: backup.FileName},
+		{StorageID: backup.StorageID, FileName: backup.FileName + metadataSuffix},
 	}
 
-	if err := storage.DeleteFile(ctx, c.fieldEncryptor, logger, backup.FileName); err != nil {
-		// we do not return error here, because sometimes clean up performed
-		// before unavailable storage removal or change - therefore we should
-		// proceed even in case of error. It's possible that some S3 or
-		// storage is not available yet, it should not block us
-		logger.WarnContext(ctx, "failed to delete backup file", "error", err)
-	}
+	// The row and the obligation to remove its files commit together, so an
+	// unreachable storage does not decide whether the row may go, and a rolled
+	// back removal leaves the files where the row still names them.
+	return db.GetDb().Transaction(func(tx *gorm.DB) error {
+		if err := c.fileStore.RequestFileDeletions(ctx, tx, references); err != nil {
+			return err
+		}
 
-	metadataFileName := backup.FileName + ".metadata"
-	if err := storage.DeleteFile(ctx, c.fieldEncryptor, logger, metadataFileName); err != nil {
-		logger.WarnContext(ctx, "failed to delete backup metadata file", "error", err)
-	}
-
-	return c.backupRepository.DeleteByID(backup.ID)
+		return c.backupRepository.DeleteByIDInTransaction(tx, backup.ID)
+	})
 }
 
 func (c *BackupCleaner) AddBackupRemoveListener(listener backups_core_logical.BackupRemoveListener) {
