@@ -27,7 +27,7 @@ type CommonBackupSpec struct {
 	// Storage stays for the reads this package still does, the parent manifest
 	// fetch among them. Everything it writes goes through FileStore.
 	Storage        storages.StorageFileSaver
-	FileStore      storage_files.FileStore
+	FileStore      *storage_files.Store
 	Encryption     backups_core_enums.BackupEncryption
 	MasterKey      string
 	FieldEncryptor util_encryption.FieldEncryptor

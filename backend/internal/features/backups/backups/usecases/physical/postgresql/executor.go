@@ -10,6 +10,8 @@ import (
 
 	physical_enums "databasus-backend/internal/features/backups/backups/core/physical/enums"
 	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
+	storage_files "databasus-backend/internal/features/storages/files"
+	db "databasus-backend/internal/storage"
 	files_utils "databasus-backend/internal/util/files"
 	"databasus-backend/internal/util/tools"
 )
@@ -110,6 +112,12 @@ func streamWithCodecFallback(
 					fmt.Sprintf("compression downgraded: %s -> %s", codec, codecFallbackOrder[i+1]),
 					"backup_id", spec.BackupID)
 
+				// The next attempt writes a different name, so this one's bytes are
+				// owned by nobody. Handing them back now rather than letting the
+				// commit window expire keeps the rejected attempt from sitting in
+				// the user's storage for as long as a healthy upload would.
+				discardAttemptFiles(ctx, spec.Common, fileName)
+
 				continue
 			}
 
@@ -124,6 +132,16 @@ func streamWithCodecFallback(
 	}
 
 	return resultFromOutcome(settled, settledFileName), nil
+}
+
+func discardAttemptFiles(ctx context.Context, common CommonBackupSpec, fileName string) {
+	err := common.FileStore.RequestFileDeletions(ctx, db.GetDb(), []storage_files.StoredFileReference{
+		{StorageID: common.StorageID, FileName: fileName},
+	})
+	if err != nil {
+		common.Logger.ErrorContext(ctx, "failed to discard a rejected codec attempt",
+			"file_name", fileName, "error", err)
+	}
 }
 
 func resultFromOutcome(outcome streamOutcome, fileName string) PhysicalBackupResult {
