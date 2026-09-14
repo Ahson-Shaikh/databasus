@@ -123,6 +123,18 @@ func (s *Store) RequestFileDeletions(
 	tx *gorm.DB,
 	references []StoredFileReference,
 ) error {
+	// A reference with no name cannot become an obligation, and a caller deriving
+	// names from a row should not have to know which of them the row carries.
+	named := make([]StoredFileReference, 0, len(references))
+
+	for _, reference := range references {
+		if reference.FileName != "" {
+			named = append(named, reference)
+		}
+	}
+
+	references = named
+
 	if err := requireTransaction(tx); err != nil {
 		return err
 	}

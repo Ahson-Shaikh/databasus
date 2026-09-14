@@ -11,8 +11,8 @@ import (
 	chain_view "databasus-backend/internal/features/backups/backups/core/physical/chain_view"
 	physical_enums "databasus-backend/internal/features/backups/backups/core/physical/enums"
 	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
-	"databasus-backend/internal/features/storages"
-	util_encryption "databasus-backend/internal/util/encryption"
+	storage_files "databasus-backend/internal/features/storages/files"
+	db "databasus-backend/internal/storage"
 )
 
 type CreateFullBackupUsecase struct{}
@@ -89,8 +89,8 @@ func (uc *CreateFullBackupUsecase) Execute(ctx context.Context, spec FullBackupS
 		}
 
 		if validation.Status == chain_view.ValidationStatusChainBroken {
-			removeUploadedArtifactsAfterChainBroken(
-				spec.Storage, spec.FieldEncryptor, streamResult.FileName, spec.Logger)
+			discardArtifactsAfterChainBroken(
+				ctx, spec.FileStore, spec.StorageID, streamResult.FileName, spec.Logger)
 
 			reason := physical_enums.PhysicalBackupErrorStartLsnOutsideTimeline
 
@@ -185,28 +185,22 @@ func classifyFullStreamError(streamErr error, stderr []byte) streamOutcome {
 	}
 }
 
-// removeUploadedArtifactsAfterChainBroken deletes the streamed artifact and its
-// reconstructed-manifest sidecar after a post-stream CHAIN_BROKEN verdict, so a
-// rejected FULL leaves nothing dangling in storage. The .metadata sidecar is not
-// touched here: it is written only after this point (see uploadFullMetadata), so
-// it does not yet exist. DeleteFile is idempotent on not-found.
-func removeUploadedArtifactsAfterChainBroken(
-	storage storages.StorageFileSaver,
-	encryptor util_encryption.FieldEncryptor,
+// A rejected FULL keeps nothing: its streamed artifact and reconstructed manifest
+// go back to cleanup. The .metadata sidecar is written only after this point, so
+// naming it here would only cost one idempotent provider call.
+func discardArtifactsAfterChainBroken(
+	ctx context.Context,
+	fileStore *storage_files.Store,
+	storageID uuid.UUID,
 	fileName string,
 	logger *slog.Logger,
 ) {
-	manifestName := fileName + manifestSuffix
-
-	if err := storage.DeleteFile(context.Background(), encryptor, logger, manifestName); err != nil {
-		logger.Warn("failed to remove manifest after CHAIN_BROKEN",
-			"file_name", manifestName,
-			"error", err)
+	references := []storage_files.StoredFileReference{
+		{StorageID: storageID, FileName: fileName},
+		{StorageID: storageID, FileName: fileName + manifestSuffix},
 	}
 
-	if err := storage.DeleteFile(context.Background(), encryptor, logger, fileName); err != nil {
-		logger.Warn("failed to remove artifact after CHAIN_BROKEN",
-			"file_name", fileName,
-			"error", err)
+	if err := fileStore.RequestFileDeletions(context.WithoutCancel(ctx), db.GetDb(), references); err != nil {
+		logger.Warn("failed to discard artifacts after CHAIN_BROKEN", "file_name", fileName, "error", err)
 	}
 }

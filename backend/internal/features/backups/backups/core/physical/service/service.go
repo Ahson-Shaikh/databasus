@@ -1065,10 +1065,6 @@ func (s *PhysicalBackupService) requestFileDeletions(
 	references := make([]storage_files.StoredFileReference, 0, len(fileNames))
 
 	for _, fileName := range fileNames {
-		if fileName == "" {
-			continue
-		}
-
 		references = append(references,
 			storage_files.StoredFileReference{StorageID: storageID, FileName: fileName})
 	}

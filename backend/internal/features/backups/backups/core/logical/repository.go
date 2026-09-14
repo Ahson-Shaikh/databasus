@@ -198,7 +198,13 @@ func (r *BackupRepository) FindByDatabaseIdAndStatus(
 }
 
 func (r *BackupRepository) DeleteByID(id uuid.UUID) error {
-	return storage.GetDb().Delete(&LogicalBackup{}, "id = ?", id).Error
+	return r.DeleteByIDInTransaction(storage.GetDb(), id)
+}
+
+// DeleteByIDInTransaction lets the caller remove the row and record the obligation
+// to remove the files it names in one transaction.
+func (r *BackupRepository) DeleteByIDInTransaction(tx *gorm.DB, id uuid.UUID) error {
+	return tx.Delete(&LogicalBackup{}, "id = ?", id).Error
 }
 
 func (r *BackupRepository) FindBackupsBeforeDate(

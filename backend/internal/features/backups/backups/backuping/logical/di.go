@@ -26,6 +26,7 @@ var (
 var backupCleaner = &BackupCleaner{
 	backupRepository,
 	storages.GetStorageService(),
+	storages.GetStorageFileStore(),
 	backups_config_logical.GetBackupConfigService(),
 	encryption.GetFieldEncryptor(),
 	logger.GetLogger(),
